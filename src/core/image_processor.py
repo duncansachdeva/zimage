@@ -39,9 +39,11 @@ class ImageProcessor:
                            sequence_number: int = None) -> str:
         """Generate output path based on naming options"""
         try:
+            # Get just the filename from the input path
             filename = os.path.basename(input_path)
             name, ext = os.path.splitext(filename)
             
+            # Generate new filename based on naming option
             if naming_option == 'same':
                 new_name = filename
             elif naming_option == 'custom':
@@ -51,13 +53,14 @@ class ImageProcessor:
             else:
                 new_name = filename
                 
-            # Preserve folder structure if input path contains subdirectories
-            rel_path = os.path.relpath(os.path.dirname(input_path), os.path.dirname(output_dir))
-            if rel_path != '.':
-                output_dir = os.path.join(output_dir, rel_path)
-                os.makedirs(output_dir, exist_ok=True)
-                
-            return os.path.join(output_dir, new_name)
+            # Simply join the output directory with the new filename
+            output_path = os.path.join(output_dir, new_name)
+            
+            # Create output directory if it doesn't exist
+            os.makedirs(output_dir, exist_ok=True)
+            
+            return output_path
+            
         except Exception as e:
             logger.error(f"Output path generation failed: {str(e)}")
             return None
@@ -100,14 +103,27 @@ class ImageProcessor:
         try:
             with Image.open(image_path) as img:
                 if target_size:
-                    img.thumbnail(target_size, Image.Resampling.LANCZOS)
+                    target_width, target_height = target_size
+                    # Get the longer side
+                    if img.width >= img.height:
+                        # Width is longer, set it to target width
+                        ratio = target_width / img.width
+                        new_size = (target_width, int(img.height * ratio))
+                    else:
+                        # Height is longer, set it to target width
+                        ratio = target_width / img.height
+                        new_size = (int(img.width * ratio), target_width)
+                    
+                    img = img.resize(new_size, Image.Resampling.LANCZOS)
                 elif scale_factor:
                     new_size = (int(img.width * scale_factor), 
                               int(img.height * scale_factor))
                     img = img.resize(new_size, Image.Resampling.LANCZOS)
+                
+                # Save with high quality and optimization
                 img.save(output_path, quality=95, optimize=True)
-            logger.info(f"Resized image: {image_path}")
-            return True
+                logger.info(f"Resized image: {image_path} to {new_size}")
+                return True
         except Exception as e:
             logger.error(f"Resize failed: {str(e)}")
             return False

@@ -1,0 +1,20 @@
+2025-03-17 20:52:55 | INFO | Starting ZImage application
+2025-03-17 20:52:55 | INFO | Initializing ImageProcessor
+2025-03-17 20:53:09 | INFO | Starting ZImage application
+2025-03-17 20:53:09 | INFO | Initializing ImageProcessor
+2025-03-17 20:54:33 | ERROR | Output path generation failed: path is on mount 'C:', start on mount 'D:'
+2025-03-17 20:57:18 | INFO | Starting ZImage application
+2025-03-17 20:57:18 | INFO | Initializing ImageProcessor
+2025-03-17 20:59:52 | INFO | Starting ZImage application
+2025-03-17 20:59:52 | INFO | Initializing ImageProcessor
+2025-03-17 21:07:58 | INFO | Starting ZImage application
+2025-03-17 21:07:58 | INFO | Initializing ImageProcessor
+2025-03-17 21:10:32 | INFO | Starting ZImage application
+2025-03-17 21:10:32 | INFO | Initializing ImageProcessor
+2025-03-17 21:11:07 | ERROR | Resize failed: must be real number, not NoneType
+2025-03-17 21:14:04 | INFO | Starting ZImage application
+2025-03-17 21:14:04 | INFO | Initializing ImageProcessor
+2025-03-17 21:16:24 | ERROR | Resize failed: unknown file extension: .temp1
+2025-03-17 21:20:04 | INFO | Starting ZImage application
+2025-03-17 21:20:04 | INFO | Initializing ImageProcessor
+2025-03-17 21:24:51 | INFO | Enhanced quality for: C:/Users/navde/Downloads/ak-2487.jpg

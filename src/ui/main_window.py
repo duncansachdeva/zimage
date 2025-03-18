@@ -1,30 +1,53 @@
 from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QPushButton, QLabel, QProgressBar, QFileDialog,
                              QComboBox, QSpinBox, QLineEdit, QMessageBox,
-                             QRadioButton, QButtonGroup, QScrollArea)
+                             QRadioButton, QButtonGroup, QScrollArea, QListWidget,
+                             QCheckBox, QInputDialog)
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QMimeData
 from PyQt6.QtGui import QDragEnterEvent, QDropEvent, QPixmap
 import os
+import json
 from loguru import logger
-from ..core.image_processor import ImageProcessor
+from src.core.image_processor import ImageProcessor
+
+class Action:
+    def __init__(self, name, params=None):
+        self.name = name
+        self.params = params or {}
+    
+    def __str__(self):
+        param_str = ", ".join(f"{k}: {v}" for k, v in self.params.items())
+        return f"{self.name} ({param_str})" if self.params else self.name
+        
+    def to_dict(self):
+        """Convert action to dictionary for saving"""
+        return {
+            'name': self.name,
+            'params': self.params
+        }
+    
+    @classmethod
+    def from_dict(cls, data):
+        """Create action from dictionary"""
+        return cls(data['name'], data['params'])
 
 class WorkerThread(QThread):
     """Worker thread for processing images"""
     progress = pyqtSignal(int)
     file_progress = pyqtSignal(str)
+    action_progress = pyqtSignal(str)
     finished = pyqtSignal()
     error = pyqtSignal(str)
     
-    def __init__(self, processor, operation, files, output_dir, naming_option='same', 
-                 custom_suffix='', **kwargs):
+    def __init__(self, processor, actions, files, output_dir, naming_option='same', 
+                 custom_suffix=''):
         super().__init__()
         self.processor = processor
-        self.operation = operation
+        self.actions = actions  # List of Action objects
         self.files = files
         self.output_dir = output_dir
         self.naming_option = naming_option
         self.custom_suffix = custom_suffix
-        self.kwargs = kwargs
         self._is_cancelled = False
         
     def cancel(self):
@@ -33,34 +56,66 @@ class WorkerThread(QThread):
         
     def run(self):
         try:
-            total = len(self.files)
-            for i, file in enumerate(self.files, 1):
+            total_files = len(self.files)
+            for file_idx, file in enumerate(self.files, 1):
                 if self._is_cancelled:
                     break
-                    
-                # Generate output path
+                
+                # Generate final output path
                 output_path = self.processor.generate_output_path(
                     file, self.output_dir,
                     self.naming_option,
                     self.custom_suffix,
-                    i if self.naming_option == 'sequential' else None
+                    file_idx if self.naming_option == 'sequential' else None
                 )
                 
                 if not output_path:
                     self.error.emit(f"Failed to generate output path for {file}")
                     continue
-                    
-                # Process file
-                self.file_progress.emit(f"Processing: {os.path.basename(file)}")
-                success = self.processor.process_with_verification(
-                    getattr(self.processor, self.operation),
-                    file, output_path, **self.kwargs
-                )
                 
-                if not success:
-                    self.error.emit(f"Failed to process {file}")
+                # Process file through action chain
+                current_file = file
+                temp_file = None
+                
+                for action_idx, action in enumerate(self.actions, 1):
+                    if self._is_cancelled:
+                        break
+                        
+                    self.action_progress.emit(f"Action {action_idx}/{len(self.actions)}: {action}")
                     
-                self.progress.emit(int(i / total * 100))
+                    # For intermediate steps, use a temp file
+                    if action_idx < len(self.actions):
+                        temp_file = f"{output_path}.temp{action_idx}"
+                    else:
+                        temp_file = output_path
+                    
+                    # Convert action name to method name
+                    method_name = action.name.lower().replace(" ", "_")
+                    success = self.processor.process_with_verification(
+                        getattr(self.processor, method_name),
+                        current_file, temp_file,
+                        **action.params
+                    )
+                    
+                    if not success:
+                        self.error.emit(f"Failed to process {file} with action: {action}")
+                        break
+                    
+                    # Update current file for next action
+                    if action_idx < len(self.actions):
+                        current_file = temp_file
+                
+                # Clean up temporary files
+                for i in range(1, len(self.actions)):
+                    temp = f"{output_path}.temp{i}"
+                    if os.path.exists(temp):
+                        try:
+                            os.remove(temp)
+                        except:
+                            pass
+                
+                self.file_progress.emit(f"Processing: {os.path.basename(file)}")
+                self.progress.emit(int(file_idx / total_files * 100))
                 
             self.finished.emit()
         except Exception as e:
@@ -70,6 +125,11 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.processor = ImageProcessor()
+        self.default_output_dir = os.path.join(os.path.expanduser("~"), "Documents", "ZImage")
+        self.queues_dir = os.path.join(self.default_output_dir, "saved_queues")
+        os.makedirs(self.queues_dir, exist_ok=True)
+        os.makedirs(self.default_output_dir, exist_ok=True)
+        self.actions_queue = []  # List to store queued actions
         self.init_ui()
         
     def init_ui(self):
@@ -81,6 +141,24 @@ class MainWindow(QMainWindow):
         main_widget = QWidget()
         self.setCentralWidget(main_widget)
         layout = QVBoxLayout(main_widget)
+        
+        # Output Directory Selection
+        output_dir_widget = QWidget()
+        output_dir_layout = QHBoxLayout(output_dir_widget)
+        output_dir_layout.setContentsMargins(0, 0, 0, 0)
+        
+        output_dir_label = QLabel("Output Directory:")
+        self.output_dir_input = QLineEdit(self.default_output_dir)
+        browse_btn = QPushButton("Browse...")
+        
+        output_dir_layout.addWidget(output_dir_label)
+        output_dir_layout.addWidget(self.output_dir_input, stretch=1)
+        output_dir_layout.addWidget(browse_btn)
+        
+        layout.addWidget(output_dir_widget)
+        
+        # Connect browse button
+        browse_btn.clicked.connect(self.browse_output_dir)
         
         # Split into left and right panels
         h_layout = QHBoxLayout()
@@ -104,9 +182,15 @@ class MainWindow(QMainWindow):
         self.drop_area.setMinimumHeight(200)
         left_layout.addWidget(self.drop_area)
         
-        # Operations ComboBox
-        self.operation_combo = QComboBox()
-        self.operation_combo.addItems([
+        # Operations Section
+        operations_group = QWidget()
+        operations_layout = QVBoxLayout(operations_group)
+        operations_layout.addWidget(QLabel("Available Actions:"))
+        
+        # Default actions
+        self.action_checks = []
+        default_actions = [
+            "Increase Size (2000px)",
             "Enhance Quality",
             "Resize Image",
             "Reduce File Size",
@@ -114,40 +198,46 @@ class MainWindow(QMainWindow):
             "Add Watermark",
             "Convert to PDF",
             "Convert from PDF"
-        ])
-        left_layout.addWidget(self.operation_combo)
+        ]
         
-        # Options widget
+        for action in default_actions:
+            check = QCheckBox(action)
+            self.action_checks.append(check)
+            operations_layout.addWidget(check)
+            # Connect checkbox state change
+            check.stateChanged.connect(self.update_action_queue)
+        
+        left_layout.addWidget(operations_group)
+        
+        # Action Queue Display
+        queue_group = QWidget()
+        queue_layout = QVBoxLayout(queue_group)
+        queue_layout.addWidget(QLabel("Action Queue:"))
+        
+        self.queue_list = QListWidget()
+        queue_layout.addWidget(self.queue_list)
+        
+        # Queue Controls
+        queue_controls = QHBoxLayout()
+        move_up_btn = QPushButton("↑")
+        move_down_btn = QPushButton("↓")
+        remove_btn = QPushButton("Remove")
+        save_queue_btn = QPushButton("Save Queue")
+        load_queue_btn = QPushButton("Load Queue")
+        
+        queue_controls.addWidget(move_up_btn)
+        queue_controls.addWidget(move_down_btn)
+        queue_controls.addWidget(remove_btn)
+        queue_controls.addWidget(save_queue_btn)
+        queue_controls.addWidget(load_queue_btn)
+        queue_layout.addLayout(queue_controls)
+        
+        left_layout.addWidget(queue_group)
+        
+        # Options widget for action parameters
         self.options_widget = QWidget()
         self.options_layout = QVBoxLayout(self.options_widget)
         left_layout.addWidget(self.options_widget)
-        
-        # File Naming Options
-        naming_group = QWidget()
-        naming_layout = QVBoxLayout(naming_group)
-        naming_layout.addWidget(QLabel("Output File Naming:"))
-        
-        self.naming_group = QButtonGroup()
-        self.same_name_radio = QRadioButton("Same filename")
-        self.custom_name_radio = QRadioButton("Custom suffix")
-        self.sequential_name_radio = QRadioButton("Sequential numbering")
-        
-        self.same_name_radio.setChecked(True)
-        self.naming_group.addButton(self.same_name_radio)
-        self.naming_group.addButton(self.custom_name_radio)
-        self.naming_group.addButton(self.sequential_name_radio)
-        
-        naming_layout.addWidget(self.same_name_radio)
-        naming_layout.addWidget(self.custom_name_radio)
-        
-        # Custom suffix input
-        self.custom_suffix_input = QLineEdit()
-        self.custom_suffix_input.setPlaceholder("Enter custom suffix")
-        self.custom_suffix_input.setEnabled(False)
-        naming_layout.addWidget(self.custom_suffix_input)
-        naming_layout.addWidget(self.sequential_name_radio)
-        
-        left_layout.addWidget(naming_group)
         
         # Progress Section
         progress_widget = QWidget()
@@ -188,6 +278,33 @@ class MainWindow(QMainWindow):
         scroll.setWidget(self.preview_label)
         right_layout.addWidget(scroll)
         
+        # File Naming Options
+        naming_group = QWidget()
+        naming_layout = QVBoxLayout(naming_group)
+        naming_layout.addWidget(QLabel("Output File Naming:"))
+        
+        self.naming_group = QButtonGroup()
+        self.same_name_radio = QRadioButton("Same filename")
+        self.custom_name_radio = QRadioButton("Custom suffix")
+        self.sequential_name_radio = QRadioButton("Sequential numbering")
+        
+        self.same_name_radio.setChecked(True)
+        self.naming_group.addButton(self.same_name_radio)
+        self.naming_group.addButton(self.custom_name_radio)
+        self.naming_group.addButton(self.sequential_name_radio)
+        
+        naming_layout.addWidget(self.same_name_radio)
+        naming_layout.addWidget(self.custom_name_radio)
+        
+        # Custom suffix input
+        self.custom_suffix_input = QLineEdit()
+        self.custom_suffix_input.setPlaceholderText("Enter custom suffix")
+        self.custom_suffix_input.setEnabled(False)
+        naming_layout.addWidget(self.custom_suffix_input)
+        naming_layout.addWidget(self.sequential_name_radio)
+        
+        left_layout.addWidget(naming_group)
+        
         # Add panels to main layout
         h_layout.addWidget(left_panel, 2)
         h_layout.addWidget(right_panel, 1)
@@ -196,9 +313,13 @@ class MainWindow(QMainWindow):
         # Connect signals
         self.process_btn.clicked.connect(self.process_files)
         self.cancel_btn.clicked.connect(self.cancel_processing)
-        self.operation_combo.currentTextChanged.connect(self.update_options)
         self.custom_name_radio.toggled.connect(
             lambda checked: self.custom_suffix_input.setEnabled(checked))
+        move_up_btn.clicked.connect(self.move_action_up)
+        move_down_btn.clicked.connect(self.move_action_down)
+        remove_btn.clicked.connect(self.remove_action)
+        save_queue_btn.clicked.connect(self.save_queue)
+        load_queue_btn.clicked.connect(self.load_queue)
         
         # Enable drag and drop
         self.setAcceptDrops(True)
@@ -208,7 +329,7 @@ class MainWindow(QMainWindow):
         self.current_worker = None
         
         # Initial options update
-        self.update_options(self.operation_combo.currentText())
+        self.update_action_queue()
         
     def update_preview(self, file_path: str):
         """Update the preview image"""
@@ -225,66 +346,76 @@ class MainWindow(QMainWindow):
         except Exception as e:
             logger.error(f"Preview update failed: {str(e)}")
             
-    def update_options(self, operation):
-        """Update options based on selected operation"""
-        # Clear previous options
-        while self.options_layout.count():
-            item = self.options_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-                
-        if operation == "Resize Image":
-            width_layout = QHBoxLayout()
-            width_layout.addWidget(QLabel("Width:"))
-            self.width_spin = QSpinBox()
-            self.width_spin.setRange(1, 10000)
-            width_layout.addWidget(self.width_spin)
-            self.options_layout.addLayout(width_layout)
+    def update_action_queue(self):
+        """Update the action queue based on selected checkboxes"""
+        self.actions_queue.clear()
+        for check in self.action_checks:
+            if check.isChecked():
+                if check.text() == "Increase Size (2000px)":
+                    self.actions_queue.append(Action("resize_image", {
+                        "target_size": (2000, 2000),  # Only the longer side will be used
+                        "scale_factor": None
+                    }))
+                elif check.text() == "Enhance Quality":
+                    self.actions_queue.append(Action("enhance_quality"))
+                elif check.text() == "Resize Image":
+                    self.actions_queue.append(Action("resize_image", {
+                        "target_size": None,
+                        "scale_factor": 0.5  # Default scale factor
+                    }))
+                elif check.text() == "Reduce File Size":
+                    self.actions_queue.append(Action("reduce_file_size", {
+                        "target_size": "medium"  # Default size
+                    }))
+                elif check.text() == "Rotate Image":
+                    self.actions_queue.append(Action("rotate_image", {
+                        "degrees": 90  # Default rotation
+                    }))
+                elif check.text() == "Add Watermark":
+                    self.actions_queue.append(Action("add_watermark", {
+                        "watermark": "ZImage",  # Default text watermark
+                        "position": None
+                    }))
+                elif check.text() == "Convert to PDF":
+                    self.actions_queue.append(Action("convert_to_pdf"))
+                elif check.text() == "Convert from PDF":
+                    self.actions_queue.append(Action("convert_from_pdf"))
+        
+        # Update the queue display
+        self.queue_list.clear()
+        for action in self.actions_queue:
+            self.queue_list.addItem(str(action))
             
-            height_layout = QHBoxLayout()
-            height_layout.addWidget(QLabel("Height:"))
-            self.height_spin = QSpinBox()
-            self.height_spin.setRange(1, 10000)
-            height_layout.addWidget(self.height_spin)
-            self.options_layout.addLayout(height_layout)
+    def update_queue_display(self):
+        """Update the queue list widget"""
+        self.queue_list.clear()
+        for action in self.actions_queue:
+            self.queue_list.addItem(str(action))
             
-        elif operation == "Reduce File Size":
-            size_combo = QComboBox()
-            size_combo.addItems(["Small", "Medium", "Large"])
-            self.options_layout.addWidget(size_combo)
+    def move_action_up(self):
+        """Move selected action up in the queue"""
+        current_row = self.queue_list.currentRow()
+        if current_row > 0:
+            self.actions_queue[current_row], self.actions_queue[current_row-1] = \
+                self.actions_queue[current_row-1], self.actions_queue[current_row]
+            self.update_queue_display()
+            self.queue_list.setCurrentRow(current_row-1)
             
-        elif operation == "Rotate Image":
-            rotation_combo = QComboBox()
-            rotation_combo.addItems(["90°", "180°", "270°"])
-            self.options_layout.addWidget(rotation_combo)
+    def move_action_down(self):
+        """Move selected action down in the queue"""
+        current_row = self.queue_list.currentRow()
+        if current_row < len(self.actions_queue) - 1:
+            self.actions_queue[current_row], self.actions_queue[current_row+1] = \
+                self.actions_queue[current_row+1], self.actions_queue[current_row]
+            self.update_queue_display()
+            self.queue_list.setCurrentRow(current_row+1)
             
-        elif operation == "Add Watermark":
-            text_input = QLineEdit()
-            text_input.setPlaceholder("Enter watermark text")
-            self.options_layout.addWidget(text_input)
-            
-    def dragEnterEvent(self, event: QDragEnterEvent):
-        """Handle drag enter events"""
-        if event.mimeData().hasUrls():
-            event.acceptProposedAction()
-            
-    def dropEvent(self, event: QDropEvent):
-        """Handle drop events"""
-        files = []
-        for url in event.mimeData().urls():
-            path = url.toLocalFile()
-            if self.processor.validate_image(path):
-                files.append(path)
-            
-        if files:
-            self.files = files
-            self.drop_area.setText(f"{len(files)} files selected")
-            # Show preview of first file
-            if len(files) > 0:
-                self.update_preview(files[0])
-        else:
-            QMessageBox.warning(self, "Invalid Files", 
-                              "No valid image files were dropped")
+    def remove_action(self):
+        """Remove selected action from the queue"""
+        current_row = self.queue_list.currentRow()
+        if current_row >= 0:
+            del self.actions_queue[current_row]
+            self.update_queue_display()
             
     def get_naming_option(self):
         """Get the selected naming option and custom suffix"""
@@ -294,6 +425,16 @@ class MainWindow(QMainWindow):
             return 'sequential', ''
         return 'same', ''
             
+    def browse_output_dir(self):
+        """Open directory browser for output directory selection"""
+        dir_path = QFileDialog.getExistingDirectory(
+            self,
+            "Select Output Directory",
+            self.output_dir_input.text()
+        )
+        if dir_path:
+            self.output_dir_input.setText(dir_path)
+            
     def process_files(self):
         """Process the selected files"""
         if not self.files:
@@ -301,19 +442,33 @@ class MainWindow(QMainWindow):
                               "Please select files to process first")
             return
             
-        # Get output directory
-        output_dir = QFileDialog.getExistingDirectory(self, "Select Output Directory")
+        if not self.actions_queue:
+            QMessageBox.warning(self, "No Actions", 
+                              "Please select at least one action to perform")
+            return
+            
+        # Get output directory from input field
+        output_dir = self.output_dir_input.text()
         if not output_dir:
+            QMessageBox.warning(self, "No Output Directory", 
+                              "Please specify an output directory")
+            return
+            
+        # Create output directory if it doesn't exist
+        try:
+            os.makedirs(output_dir, exist_ok=True)
+        except Exception as e:
+            QMessageBox.critical(self, "Error", 
+                               f"Failed to create output directory: {str(e)}")
             return
             
         # Get naming option
         naming_option, custom_suffix = self.get_naming_option()
         
-        # Create worker thread
-        operation = self.operation_combo.currentText().lower().replace(" ", "_")
+        # Create worker thread with action queue
         self.current_worker = WorkerThread(
             self.processor,
-            operation,
+            self.actions_queue,
             self.files,
             output_dir,
             naming_option,
@@ -323,6 +478,7 @@ class MainWindow(QMainWindow):
         # Connect signals
         self.current_worker.progress.connect(self.progress_bar.setValue)
         self.current_worker.file_progress.connect(self.file_progress_label.setText)
+        self.current_worker.action_progress.connect(lambda s: self.file_progress_label.setText(f"{s}"))
         self.current_worker.finished.connect(self.processing_finished)
         self.current_worker.error.connect(self.show_error)
         
@@ -355,4 +511,123 @@ class MainWindow(QMainWindow):
         """Show error message"""
         QMessageBox.critical(self, "Error", message)
         self.process_btn.setEnabled(True)
-        self.cancel_btn.setEnabled(False) 
+        self.cancel_btn.setEnabled(False)
+        
+    def save_queue(self):
+        """Save current action queue"""
+        if not self.actions_queue:
+            QMessageBox.warning(self, "Empty Queue", 
+                              "No actions in queue to save")
+            return
+            
+        # Get queue name from user
+        name, ok = QInputDialog.getText(self, "Save Queue", 
+                                      "Enter name for this queue:")
+        if not ok or not name:
+            return
+            
+        # Sanitize filename
+        filename = "".join(c for c in name if c.isalnum() or c in (' ', '-', '_'))
+        filepath = os.path.join(self.queues_dir, f"{filename}.json")
+        
+        # Convert queue to saveable format
+        queue_data = {
+            'name': name,
+            'actions': [action.to_dict() for action in self.actions_queue]
+        }
+        
+        try:
+            with open(filepath, 'w') as f:
+                json.dump(queue_data, f, indent=2)
+            QMessageBox.information(self, "Success", 
+                                  f"Queue saved as '{name}'")
+        except Exception as e:
+            logger.error(f"Failed to save queue: {str(e)}")
+            QMessageBox.critical(self, "Error", 
+                               f"Failed to save queue: {str(e)}")
+            
+    def load_queue(self):
+        """Load a saved action queue"""
+        # Get list of saved queues
+        try:
+            queue_files = [f for f in os.listdir(self.queues_dir) 
+                         if f.endswith('.json')]
+        except Exception as e:
+            logger.error(f"Failed to list saved queues: {str(e)}")
+            QMessageBox.critical(self, "Error", 
+                               f"Failed to list saved queues: {str(e)}")
+            return
+            
+        if not queue_files:
+            QMessageBox.information(self, "No Saved Queues", 
+                                  "No saved queues found")
+            return
+            
+        # Show queue selection dialog
+        queue_names = []
+        queue_data_map = {}
+        
+        for filename in queue_files:
+            try:
+                with open(os.path.join(self.queues_dir, filename)) as f:
+                    data = json.load(f)
+                    queue_names.append(data['name'])
+                    queue_data_map[data['name']] = data
+            except Exception as e:
+                logger.error(f"Failed to read queue file {filename}: {str(e)}")
+                continue
+                
+        if not queue_names:
+            QMessageBox.critical(self, "Error", 
+                               "No valid queue files found")
+            return
+            
+        name, ok = QInputDialog.getItem(self, "Load Queue",
+                                      "Select a queue to load:",
+                                      queue_names, 0, False)
+        if not ok or not name:
+            return
+            
+        # Load selected queue
+        try:
+            data = queue_data_map[name]
+            self.actions_queue = [Action.from_dict(action_data) 
+                                for action_data in data['actions']]
+            
+            # Update UI
+            self.update_queue_display()
+            
+            # Update checkboxes to match loaded queue
+            for check in self.action_checks:
+                check.setChecked(any(action.name == check.text() 
+                                   for action in self.actions_queue))
+                
+            QMessageBox.information(self, "Success", 
+                                  f"Queue '{name}' loaded successfully")
+        except Exception as e:
+            logger.error(f"Failed to load queue: {str(e)}")
+            QMessageBox.critical(self, "Error", 
+                               f"Failed to load queue: {str(e)}")
+
+    def dragEnterEvent(self, event: QDragEnterEvent):
+        """Handle drag enter events"""
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+            
+    def dropEvent(self, event: QDropEvent):
+        """Handle drop events"""
+        files = []
+        for url in event.mimeData().urls():
+            path = url.toLocalFile()
+            if self.processor.validate_image(path):
+                files.append(path)
+            
+        if files:
+            self.files = files
+            self.drop_area.setText(f"{len(files)} files selected")
+            # Show preview of first file
+            if len(files) > 0:
+                self.update_preview(files[0])
+        else:
+            QMessageBox.warning(self, "Invalid Files", 
+                              "No valid image files were dropped") 

@@ -2,7 +2,7 @@ import sys
 from PyQt6.QtWidgets import QApplication
 from loguru import logger
 import os
-from ui.main_window import MainWindow
+from src.ui.main_window import MainWindow
 
 def setup_logging():
     """Setup logging configuration"""
