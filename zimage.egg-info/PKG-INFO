@@ -1,0 +1,14 @@
+Metadata-Version: 2.2
+Name: zimage
+Version: 0.1.0
+Requires-Dist: PyQt6>=6.4.0
+Requires-Dist: Pillow>=10.0.0
+Requires-Dist: pdf2image>=1.16.3
+Requires-Dist: img2pdf>=0.4.4
+Requires-Dist: loguru>=0.7.0
+Provides-Extra: dev
+Requires-Dist: pytest>=7.3.1; extra == "dev"
+Requires-Dist: black>=23.0.0; extra == "dev"
+Requires-Dist: flake8>=6.0.0; extra == "dev"
+Dynamic: provides-extra
+Dynamic: requires-dist
