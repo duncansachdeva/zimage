@@ -2,6 +2,7 @@ import sys
 from PyQt6.QtWidgets import QApplication
 from loguru import logger
 import os
+from src.core.theme_manager import ThemeManager
 from src.ui.main_window import MainWindow
 
 def setup_logging():
@@ -28,8 +29,11 @@ def main():
     app = QApplication(sys.argv)
     app.setStyle('Fusion')  # Use Fusion style for consistent look
     
+    # Initialize ThemeManager with default theme (light)
+    theme_manager = ThemeManager(app, initial_theme="light")
+
     # Create and show main window
-    window = MainWindow()
+    window = MainWindow(theme_manager)
     window.show()
     
     # Start event loop
