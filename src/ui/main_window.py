@@ -1,14 +1,15 @@
 from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QPushButton, QLabel, QProgressBar, QFileDialog,
-                             QComboBox, QSpinBox, QLineEdit, QMessageBox,
-                             QRadioButton, QButtonGroup, QScrollArea, QListWidget,
-                             QCheckBox, QInputDialog)
+                             QComboBox, QSpinBox, QDoubleSpinBox, QLineEdit,
+                             QMessageBox, QRadioButton, QButtonGroup, QScrollArea,
+                             QListWidget, QCheckBox, QInputDialog)
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QMimeData
 from PyQt6.QtGui import QDragEnterEvent, QDropEvent, QPixmap
 import os
 import json
 from loguru import logger
 from src.core.image_processor import ImageProcessor
+from src.core.optimized_processor import OptimizedProcessor
 
 class Action:
     def __init__(self, name, params=None):
@@ -121,6 +122,26 @@ class WorkerThread(QThread):
         except Exception as e:
             self.error.emit(str(e))
 
+class BatchProcessingThread(QThread):
+    progress_update = pyqtSignal(int, int)  # emits (completed, total)
+    processing_finished = pyqtSignal(list)    # emits list of results
+    
+    def __init__(self, processor, files, actions, output_dir, naming_option, custom_suffix):
+        super().__init__()
+        self.processor = processor
+        self.files = files
+        self.actions = actions
+        self.output_dir = output_dir
+        self.naming_option = naming_option
+        self.custom_suffix = custom_suffix
+
+    def run(self):
+        results = self.processor.process_batch_parallel(
+            self.files, self.actions, self.output_dir, self.naming_option, self.custom_suffix,
+            progress_callback=self.progress_update.emit
+        )
+        self.processing_finished.emit(results)
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -197,7 +218,8 @@ class MainWindow(QMainWindow):
             "Rotate Image",
             "Add Watermark",
             "Convert to PDF",
-            "Convert from PDF"
+            "Convert from PDF",
+            "Upscale Image (Waifu2x)"
         ]
         
         for action in default_actions:
@@ -331,6 +353,21 @@ class MainWindow(QMainWindow):
         # Initial options update
         self.update_action_queue()
         
+        # Add Batch Processing section
+        self.batch_process_button = QPushButton("Process Batch")
+        self.batch_process_button.clicked.connect(self.start_batch_processing)
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setValue(0)
+        self.progress_bar.hide()
+
+        batch_layout = QHBoxLayout()
+        batch_layout.addWidget(self.batch_process_button)
+        batch_layout.addWidget(self.progress_bar)
+        layout.addLayout(batch_layout)
+        
+        # Call other initializations
+        self.init_status_bar()
+        
     def update_preview(self, file_path: str):
         """Update the preview image"""
         try:
@@ -347,45 +384,19 @@ class MainWindow(QMainWindow):
             logger.error(f"Preview update failed: {str(e)}")
             
     def update_action_queue(self):
-        """Update the action queue based on selected checkboxes"""
-        self.actions_queue.clear()
-        for check in self.action_checks:
-            if check.isChecked():
-                if check.text() == "Increase Size (2000px)":
-                    self.actions_queue.append(Action("resize_image", {
-                        "target_size": (2000, 2000),  # Only the longer side will be used
-                        "scale_factor": None
-                    }))
-                elif check.text() == "Enhance Quality":
-                    self.actions_queue.append(Action("enhance_quality"))
-                elif check.text() == "Resize Image":
-                    self.actions_queue.append(Action("resize_image", {
-                        "target_size": None,
-                        "scale_factor": 0.5  # Default scale factor
-                    }))
-                elif check.text() == "Reduce File Size":
-                    self.actions_queue.append(Action("reduce_file_size", {
-                        "target_size": "medium"  # Default size
-                    }))
-                elif check.text() == "Rotate Image":
-                    self.actions_queue.append(Action("rotate_image", {
-                        "degrees": 90  # Default rotation
-                    }))
-                elif check.text() == "Add Watermark":
-                    self.actions_queue.append(Action("add_watermark", {
-                        "watermark": "ZImage",  # Default text watermark
-                        "position": None
-                    }))
-                elif check.text() == "Convert to PDF":
-                    self.actions_queue.append(Action("convert_to_pdf"))
-                elif check.text() == "Convert from PDF":
-                    self.actions_queue.append(Action("convert_from_pdf"))
+        # Clear any existing parameter widgets from the options layout
+        while self.options_layout.count() > 0:
+            item = self.options_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
         
-        # Update the queue display
-        self.queue_list.clear()
-        for action in self.actions_queue:
-            self.queue_list.addItem(str(action))
-            
+        # Check if the 'Upscale Image (Waifu2x)' action is selected via checkbox
+        has_upscale = any(check.text() == "Upscale Image (Waifu2x)" and check.isChecked() for check in self.action_checks)
+        if has_upscale:
+            self.setup_upscale_parameters()
+        # If not selected, parameters remain cleared
+        
     def update_queue_display(self):
         """Update the queue list widget"""
         self.queue_list.clear()
@@ -630,4 +641,71 @@ class MainWindow(QMainWindow):
                 self.update_preview(files[0])
         else:
             QMessageBox.warning(self, "Invalid Files", 
-                              "No valid image files were dropped") 
+                              "No valid image files were dropped")
+
+    def setup_upscale_parameters(self):
+        """Add parameter controls for the Upscale Image action."""
+        from PyQt6.QtWidgets import QDoubleSpinBox, QHBoxLayout
+        # Create a container for upscale parameters
+        upscale_widget = QWidget()
+        hlayout = QHBoxLayout(upscale_widget)
+        scale_label = QLabel("Scale Factor:")
+        self.scale_spin = QDoubleSpinBox()
+        self.scale_spin.setRange(1.0, 5.0)
+        self.scale_spin.setSingleStep(0.1)
+        self.scale_spin.setValue(2.0)
+        noise_label = QLabel("Noise Level:")
+        self.noise_spin = QSpinBox()
+        self.noise_spin.setRange(0, 3)
+        self.noise_spin.setValue(1)
+        hlayout.addWidget(scale_label)
+        hlayout.addWidget(self.scale_spin)
+        hlayout.addWidget(noise_label)
+        hlayout.addWidget(self.noise_spin)
+        self.options_layout.addWidget(upscale_widget) 
+
+    def start_batch_processing(self):
+        # Open file dialog to select multiple images
+        files, _ = QFileDialog.getOpenFileNames(self, "Select Images for Batch Processing", "", "Images (*.png *.jpg *.jpeg *.bmp)")
+        if not files:
+            return
+        
+        # Retrieve actions from the current queue (assuming self.actions_queue is updated via update_action_queue)
+        if not hasattr(self, 'actions_queue') or not self.actions_queue:
+            self.update_status_info("No actions selected for processing.")
+            return
+        actions = self.actions_queue
+        
+        # Prompt for output directory
+        output_dir = QFileDialog.getExistingDirectory(self, "Select Output Directory")
+        if not output_dir:
+            return
+        
+        # Instantiate the OptimizedProcessor
+        self.processor = OptimizedProcessor()
+        
+        # Setup progress bar and disable the button during processing
+        self.progress_bar.setValue(0)
+        self.progress_bar.show()
+        self.batch_process_button.setEnabled(False)
+        
+        # Create and start the batch processing thread
+        self.batch_thread = BatchProcessingThread(self.processor, files, actions, output_dir, "default", "")
+        self.batch_thread.progress_update.connect(self.on_progress_update)
+        self.batch_thread.processing_finished.connect(self.on_processing_finished)
+        self.batch_thread.start()
+
+    def on_progress_update(self, completed, total):
+        progress = int((completed / total) * 100)
+        self.progress_bar.setValue(progress)
+        self.update_status_info(f"Processing: {completed}/{total}")
+
+    def on_processing_finished(self, results):
+        self.progress_bar.hide()
+        self.batch_process_button.setEnabled(True)
+        self.update_status_info("Batch processing completed.")
+        # Optionally, show a message box with summary
+        msg = QMessageBox()
+        msg.setWindowTitle("Processing Complete")
+        msg.setText(f"Processed {len(results)} files.")
+        msg.exec() 

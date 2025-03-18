@@ -226,4 +226,35 @@ class ImageProcessor:
             return operation_func(input_path, output_path, **kwargs)
         except Exception as e:
             logger.error(f"Processing failed: {str(e)}")
+            return False
+
+    def upscale_image_waifu2x(self, image_path: str, output_path: str, scale: float = 2.0, noise: int = 1) -> bool:
+        """Upscale an image using the waifu2x-converter-cpp command-line tool.
+
+        Parameters:
+          image_path: Path to the input image.
+          output_path: Path where the upscaled image will be saved.
+          scale: Scaling factor (default 2.0).
+          noise: Noise reduction level (default 1).
+
+        Returns:
+          True if the operation is successful, False otherwise.
+        """
+        import subprocess
+        try:
+            command = [
+                'waifu2x-converter-cpp',
+                '-i', image_path,
+                '-o', output_path,
+                '-s', str(scale),
+                '-n', str(noise)
+            ]
+            result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            if result.returncode != 0:
+                logger.error(f"Waifu2x upscaling failed: {result.stderr}")
+                return False
+            logger.info(f"Upscaled image successfully: {image_path} -> {output_path}")
+            return True
+        except Exception as e:
+            logger.error(f"Exception during Waifu2x upscaling: {e}")
             return False 
