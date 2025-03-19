@@ -62,8 +62,8 @@ class OptimizedProcessor(ImageProcessor):
         else:
             return None
 
-    def process_batch_parallel(self, files, actions, output_dir, naming_option, custom_suffix, progress_callback=None):
-        """Processes multiple files in parallel and returns a list of tuples (file, output_path). Optionally, calls progress_callback(completed, total) after each file is processed."""
+    def process_batch_parallel(self, files, actions, output_dir, naming_option, custom_suffix, progress_callback=None, cancel_flag=None):
+        """Processes multiple files in parallel and returns a list of tuples (file, output_path). Optionally, calls progress_callback(completed, total) after each file is processed. The cancel_flag is a callable that returns True if cancellation is requested."""
         results = []
         total = len(files)
         processed_count = 0
@@ -73,6 +73,10 @@ class OptimizedProcessor(ImageProcessor):
                 for idx, file in enumerate(files)
             }
             for future in as_completed(future_to_file):
+                if cancel_flag is not None and cancel_flag():
+                    for fut in future_to_file:
+                        fut.cancel()
+                    break
                 file = future_to_file[future]
                 try:
                     result = future.result()
