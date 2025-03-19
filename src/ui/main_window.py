@@ -365,9 +365,13 @@ class MainWindow(QMainWindow):
         batch_layout.addWidget(self.progress_bar)
         layout.addLayout(batch_layout)
         
-        # Call other initializations
-        self.init_status_bar()
+        # Initialize variables
+        self.files = []
+        self.current_worker = None
         
+        # Initial options update
+        self.update_action_queue()
+
     def update_preview(self, file_path: str):
         """Update the preview image"""
         try:
@@ -391,11 +395,29 @@ class MainWindow(QMainWindow):
             if widget is not None:
                 widget.deleteLater()
         
-        # Check if the 'Upscale Image (Waifu2x)' action is selected via checkbox
-        has_upscale = any(check.text() == "Upscale Image (Waifu2x)" and check.isChecked() for check in self.action_checks)
-        if has_upscale:
-            self.setup_upscale_parameters()
-        # If not selected, parameters remain cleared
+        # Clear the current queue
+        self.actions_queue.clear()
+        
+        # Add selected actions to the queue
+        for check in self.action_checks:
+            if check.isChecked():
+                action_name = check.text()
+                params = {}
+                
+                # Handle special parameters for Waifu2x
+                if action_name == "Upscale Image (Waifu2x)":
+                    self.setup_upscale_parameters()
+                    params = {
+                        'scale': self.scale_spin.value(),
+                        'noise_level': self.noise_spin.value()
+                    }
+                
+                # Create and add the action to the queue
+                action = Action(action_name, params)
+                self.actions_queue.append(action)
+        
+        # Update the queue display
+        self.update_queue_display()
         
     def update_queue_display(self):
         """Update the queue list widget"""
@@ -709,3 +731,7 @@ class MainWindow(QMainWindow):
         msg.setWindowTitle("Processing Complete")
         msg.setText(f"Processed {len(results)} files.")
         msg.exec() 
+
+    def update_status_info(self, message):
+        """Update status information"""
+        self.file_progress_label.setText(message) 
