@@ -5,6 +5,7 @@ from loguru import logger
 from typing import Tuple, Optional, Union
 import img2pdf
 from pdf2image import convert_from_path
+from io import BytesIO
 
 class ImageProcessor:
     """
@@ -142,32 +143,92 @@ class ImageProcessor:
             logger.error(f"Failed to resize image: {str(e)}")
             return False
             
-    def reduce_file_size(self, image_path: str, output_path: str, 
-                        target_size: str) -> bool:
-        """Reduce file size to target size (small, medium, large)"""
-        size_map = {
-            'small': 300 * 1024,  # 300KB
-            'medium': 800 * 1024,  # 800KB
-            'large': 2 * 1024 * 1024  # 2MB
-        }
-        
+    def reduce_file_size(self, input_path, output_path, target_size_mb):
+        """Reduce file size to target size in MB while maintaining action chain compatibility"""
         try:
-            target_bytes = size_map.get(target_size.lower())
-            if not target_bytes:
-                raise ValueError(f"Invalid target size: {target_size}")
+            # Get original file size and extension
+            original_size = os.path.getsize(input_path) / (1024 * 1024)  # Convert to MB
+            original_ext = os.path.splitext(input_path)[1].lower()
+            
+            with Image.open(input_path) as img:
+                # Convert to RGB if necessary
+                if img.mode in ('RGBA', 'P'):
+                    img = img.convert('RGB')
                 
-            quality = 95
-            with Image.open(image_path) as img:
-                while True:
-                    img.save(output_path, quality=quality, optimize=True)
-                    if os.path.getsize(output_path) <= target_bytes or quality <= 5:
-                        break
-                    quality -= 5
+                # If original is already smaller, still process through PIL but with max quality
+                if original_size <= target_size_mb:
+                    logger.info(f"File already smaller than target size: {original_size:.1f}MB <= {target_size_mb:.1f}MB")
+                    # Save with maximum quality but still optimize
+                    img.save(output_path, format='JPEG', quality=95, optimize=True)
+                    return True
+                
+                # Start with estimated quality based on size ratio
+                quality = min(95, max(5, int((target_size_mb / original_size) * 100)))
+                max_attempts = 15  # Increased attempts for better accuracy
+                attempt = 0
+                best_result = {'quality': quality, 'size': float('inf'), 'diff': float('inf')}
+                
+                while attempt < max_attempts:
+                    # Create a temporary buffer for size testing
+                    temp_buffer = BytesIO()
+                    img.save(temp_buffer, format='JPEG', quality=quality, optimize=True)
+                    result_size = len(temp_buffer.getvalue()) / (1024 * 1024)  # Convert to MB
                     
-            logger.info(f"Reduced file size for: {image_path}")
-            return True
+                    # Calculate how far we are from target
+                    size_diff = abs(result_size - target_size_mb)
+                    
+                    # Update best result if this is closer to target and not exceeding it by much
+                    if size_diff < best_result['diff'] and (result_size <= target_size_mb * 1.05):
+                        best_result = {
+                            'quality': quality,
+                            'size': result_size,
+                            'diff': size_diff,
+                            'data': temp_buffer.getvalue()  # Store the actual data
+                        }
+                    
+                    # If we're within 2% of target size, we're done
+                    if abs(result_size - target_size_mb) / target_size_mb <= 0.02:
+                        with open(output_path, 'wb') as f:
+                            f.write(temp_buffer.getvalue())
+                        logger.info(f"Reduced file size: {output_path} "
+                                  f"(Original: {original_size:.1f}MB, "
+                                  f"Target: {target_size_mb:.1f}MB, "
+                                  f"Final: {result_size:.1f}MB, "
+                                  f"Quality: {quality}%)")
+                        return True
+                    
+                    # Adjust quality based on how far we are from target
+                    if result_size > target_size_mb:
+                        # If we're too big, reduce quality
+                        quality_change = max(1, int(quality * (1 - (result_size - target_size_mb) / target_size_mb * 0.5)))
+                        quality = max(5, quality - quality_change)
+                    else:
+                        # If we're too small, increase quality more aggressively
+                        quality_change = max(1, int(quality * ((target_size_mb - result_size) / target_size_mb * 0.5)))
+                        quality = min(95, quality + quality_change)
+                    
+                    attempt += 1
+                
+                # Use the best result we found
+                if 'data' in best_result:
+                    with open(output_path, 'wb') as f:
+                        f.write(best_result['data'])
+                    logger.info(f"Using best result: {output_path} "
+                              f"(Original: {original_size:.1f}MB, "
+                              f"Target: {target_size_mb:.1f}MB, "
+                              f"Final: {best_result['size']:.1f}MB, "
+                              f"Quality: {best_result['quality']}%)")
+                    return True
+                else:
+                    # If we couldn't find a good result, use the last attempt
+                    img.save(output_path, format='JPEG', quality=quality, optimize=True)
+                    logger.warning(f"Could not achieve target size after {max_attempts} attempts. "
+                                 f"Final size: {result_size:.1f}MB "
+                                 f"(Target: {target_size_mb:.1f}MB, Quality: {quality}%)")
+                    return True
+                
         except Exception as e:
-            logger.error(f"File size reduction failed: {str(e)}")
+            logger.error(f"Failed to reduce file size: {e}")
             return False
             
     def rotate_image(self, image_path: str, output_path: str, 

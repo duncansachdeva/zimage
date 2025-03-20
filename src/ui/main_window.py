@@ -11,6 +11,7 @@ from loguru import logger
 from PIL import Image
 from src.core.image_processor import ImageProcessor
 from src.core.optimized_processor import OptimizedProcessor
+from io import BytesIO
 
 class Action:
     def __init__(self, name, params=None):
@@ -421,6 +422,11 @@ class MainWindow(QMainWindow):
                     params = {
                         'scale': self.scale_spin.value(),
                         'noise_level': self.noise_spin.value()
+                    }
+                elif action_name == "Reduce File Size":
+                    self.setup_reduce_size_parameters()
+                    params = {
+                        'target_size_mb': self.target_size_spin.value()
                     }
                 
                 # Create and add the action to the queue
@@ -834,6 +840,124 @@ class MainWindow(QMainWindow):
         except Exception as e:
             logger.error(f"Failed to update preview: {e}")
             self.resize_preview_label.setText("Failed to update preview")
+            self.preview_label.clear()
+
+    def setup_reduce_size_parameters(self):
+        """Add parameter controls for Reduce File Size action"""
+        reduce_widget = QWidget()
+        layout = QVBoxLayout(reduce_widget)
+        
+        # Target size input
+        size_layout = QHBoxLayout()
+        size_label = QLabel("Target Size (MB):")
+        self.target_size_spin = QDoubleSpinBox()
+        self.target_size_spin.setRange(0.1, 100.0)  # 100KB to 100MB
+        self.target_size_spin.setDecimals(1)
+        self.target_size_spin.setSingleStep(0.1)
+        self.target_size_spin.setValue(1.0)  # Default 1MB
+        size_layout.addWidget(size_label)
+        size_layout.addWidget(self.target_size_spin)
+        layout.addLayout(size_layout)
+        
+        # Preview label for dimensions
+        self.resize_preview_label = QLabel()
+        self.resize_preview_label.setStyleSheet("color: gray;")
+        self.resize_preview_label.setWordWrap(True)
+        layout.addWidget(self.resize_preview_label)
+        
+        # Connect signal to the same preview update system
+        self.target_size_spin.valueChanged.connect(self.update_reduce_size_parameters)
+        
+        self.options_layout.addWidget(reduce_widget)
+        
+        # Initial preview update
+        self.update_reduce_size_parameters()
+
+    def update_reduce_size_parameters(self):
+        """Update both action parameters and previews"""
+        # Update action parameters in queue
+        for action in self.actions_queue:
+            if action.name == "Reduce File Size":
+                action.params.update({
+                    'target_size_mb': self.target_size_spin.value()
+                })
+        
+        # Update queue display
+        self.update_queue_display()
+        
+        # Update preview
+        self.update_reduce_size_preview()
+
+    def update_reduce_size_preview(self):
+        """Update the preview area with file size information"""
+        if not hasattr(self, 'files') or not self.files:
+            self.preview_label.clear()
+            self.resize_preview_label.setText("Drop images to see file size information")
+            return
+            
+        try:
+            # Get first image file size
+            file_size = os.path.getsize(self.files[0]) / (1024 * 1024)  # Convert to MB
+            target_size = self.target_size_spin.value()
+            
+            # Calculate compression ratio and estimated quality
+            ratio = target_size / file_size
+            estimated_quality = int(ratio * 100)
+            estimated_quality = max(1, min(100, estimated_quality))
+            
+            # Create preview text
+            preview_text = [
+                "Preview of first image:",
+                f"Original size: {file_size:.1f} MB",
+                f"Target size: {target_size:.1f} MB",
+                f"Estimated quality: {estimated_quality}%"
+            ]
+            
+            # Add warning if compression is high
+            if ratio < 0.5:
+                preview_text.append("\nNote: High compression may affect image quality")
+            
+            # Add note for multiple images if applicable
+            if len(self.files) > 1:
+                preview_text.extend([
+                    "",
+                    f"Note: These settings will be applied to all {len(self.files)} images.",
+                    "Actual results may vary based on each image's content."
+                ])
+            
+            # Update the same preview label used by other actions
+            self.resize_preview_label.setText("\n".join(preview_text))
+            
+            # Show preview of image with estimated quality
+            with Image.open(self.files[0]) as img:
+                # Create preview with estimated quality
+                preview_img = img.copy()
+                if preview_img.mode in ('RGBA', 'P'):
+                    preview_img = preview_img.convert('RGB')
+                
+                # Create a temporary buffer for the preview
+                temp_buffer = BytesIO()
+                preview_img.save(temp_buffer, format='JPEG', quality=estimated_quality)
+                temp_buffer.seek(0)
+                
+                # Load the compressed preview
+                preview_data = temp_buffer.getvalue()
+                qimg = QImage.fromData(preview_data)
+                pixmap = QPixmap.fromImage(qimg)
+                
+                # Scale to fit preview area while maintaining aspect ratio
+                scaled_pixmap = pixmap.scaled(
+                    self.preview_label.size(),
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation
+                )
+                
+                # Update preview image
+                self.preview_label.setPixmap(scaled_pixmap)
+                
+        except Exception as e:
+            logger.error(f"Failed to update reduce size preview: {e}")
+            self.resize_preview_label.setText("Failed to calculate file size")
             self.preview_label.clear()
 
     def start_batch_processing(self):
