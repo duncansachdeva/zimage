@@ -96,36 +96,50 @@ class ImageProcessor:
             logger.error(f"Quality enhancement failed: {str(e)}")
             return False
             
-    def resize_image(self, image_path: str, output_path: str, 
-                    target_size: Optional[Tuple[int, int]] = None,
-                    scale_factor: Optional[float] = None) -> bool:
-        """Resize image maintaining aspect ratio"""
+    def resize_image(self, image_path, output_path, target_dimension, constrain_width=True, quality=100):
+        """Resize an image while maintaining aspect ratio.
+        
+        Args:
+            image_path (str): Path to the input image
+            output_path (str): Path to save the resized image
+            target_dimension (int): Target width or height in pixels
+            constrain_width (bool): If True, target_dimension is width, else height
+            quality (int): JPEG quality (1-100)
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
         try:
             with Image.open(image_path) as img:
-                if target_size:
-                    target_width, target_height = target_size
-                    # Get the longer side
-                    if img.width >= img.height:
-                        # Width is longer, set it to target width
-                        ratio = target_width / img.width
-                        new_size = (target_width, int(img.height * ratio))
-                    else:
-                        # Height is longer, set it to target width
-                        ratio = target_width / img.height
-                        new_size = (int(img.width * ratio), target_width)
-                    
-                    img = img.resize(new_size, Image.Resampling.LANCZOS)
-                elif scale_factor:
-                    new_size = (int(img.width * scale_factor), 
-                              int(img.height * scale_factor))
-                    img = img.resize(new_size, Image.Resampling.LANCZOS)
+                # Calculate new dimensions
+                orig_width, orig_height = img.size
+                if constrain_width:
+                    new_width = target_dimension
+                    new_height = int(orig_height * (target_dimension / orig_width))
+                else:
+                    new_height = target_dimension
+                    new_width = int(orig_width * (target_dimension / orig_height))
                 
-                # Save with high quality and optimization
-                img.save(output_path, quality=95, optimize=True)
-                logger.info(f"Resized image: {image_path} to {new_size}")
+                # Use LANCZOS resampling for high quality
+                resized_img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+                
+                # Determine format and save options
+                format = img.format or 'JPEG'
+                save_options = {}
+                
+                if format == 'JPEG':
+                    save_options['quality'] = quality
+                    save_options['optimize'] = True
+                elif format == 'PNG':
+                    save_options['optimize'] = True
+                
+                # Save the image
+                resized_img.save(output_path, format=format, **save_options)
+                logger.info(f"Resized image saved: {output_path} ({new_width}x{new_height})")
                 return True
+                
         except Exception as e:
-            logger.error(f"Resize failed: {str(e)}")
+            logger.error(f"Failed to resize image: {str(e)}")
             return False
             
     def reduce_file_size(self, image_path: str, output_path: str, 

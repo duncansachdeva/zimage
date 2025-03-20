@@ -3,11 +3,12 @@ from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QComboBox, QSpinBox, QDoubleSpinBox, QLineEdit,
                              QMessageBox, QRadioButton, QButtonGroup, QScrollArea,
                              QListWidget, QCheckBox, QInputDialog)
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QMimeData
-from PyQt6.QtGui import QDragEnterEvent, QDropEvent, QPixmap
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QMimeData, QSize
+from PyQt6.QtGui import QDragEnterEvent, QDropEvent, QPixmap, QImage
 import os
 import json
 from loguru import logger
+from PIL import Image
 from src.core.image_processor import ImageProcessor
 from src.core.optimized_processor import OptimizedProcessor
 
@@ -78,15 +79,18 @@ class WorkerThread(QThread):
                 current_file = file
                 temp_file = None
                 
+                # Get the original file extension
+                original_ext = os.path.splitext(file)[1].lower()
+                
                 for action_idx, action in enumerate(self.actions, 1):
                     if self._is_cancelled:
                         break
                         
                     self.action_progress.emit(f"Action {action_idx}/{len(self.actions)}: {action}")
                     
-                    # For intermediate steps, use a temp file
+                    # For intermediate steps, use a temp file with proper extension
                     if action_idx < len(self.actions):
-                        temp_file = f"{output_path}.temp{action_idx}"
+                        temp_file = f"{output_path}.temp{action_idx}{original_ext}"
                     else:
                         temp_file = output_path
                     
@@ -108,7 +112,7 @@ class WorkerThread(QThread):
                 
                 # Clean up temporary files
                 for i in range(1, len(self.actions)):
-                    temp = f"{output_path}.temp{i}"
+                    temp = f"{output_path}.temp{i}{original_ext}"
                     if os.path.exists(temp):
                         try:
                             os.remove(temp)
@@ -143,8 +147,9 @@ class BatchProcessingThread(QThread):
         self.processing_finished.emit(results)
 
 class MainWindow(QMainWindow):
-    def __init__(self):
+    def __init__(self, theme_manager=None):
         super().__init__()
+        self.theme_manager = theme_manager
         self.processor = ImageProcessor()
         self.default_output_dir = os.path.join(os.path.expanduser("~"), "Documents", "ZImage")
         self.queues_dir = os.path.join(self.default_output_dir, "saved_queues")
@@ -404,8 +409,15 @@ class MainWindow(QMainWindow):
                 action_name = check.text()
                 params = {}
                 
-                # Handle special parameters for Waifu2x
-                if action_name == "Upscale Image (Waifu2x)":
+                # Handle special parameters for different actions
+                if action_name == "Resize Image":
+                    self.setup_resize_parameters()
+                    params = {
+                        'target_dimension': self.target_dim_spin.value(),
+                        'constrain_width': self.width_radio.isChecked(),
+                        'quality': self.quality_spin.value()
+                    }
+                elif action_name == "Upscale Image (Waifu2x)":
                     self.setup_upscale_parameters()
                     params = {
                         'scale': self.scale_spin.value(),
@@ -684,7 +696,146 @@ class MainWindow(QMainWindow):
         hlayout.addWidget(self.scale_spin)
         hlayout.addWidget(noise_label)
         hlayout.addWidget(self.noise_spin)
-        self.options_layout.addWidget(upscale_widget) 
+        self.options_layout.addWidget(upscale_widget)
+
+    def setup_resize_parameters(self):
+        """Add parameter controls for the Resize Image action."""
+        # Create container for resize parameters
+        resize_widget = QWidget()
+        layout = QVBoxLayout(resize_widget)
+        
+        # Target dimension input
+        dim_layout = QHBoxLayout()
+        dim_label = QLabel("Target dimension (px):")
+        self.target_dim_spin = QSpinBox()
+        self.target_dim_spin.setRange(1, 10000)
+        self.target_dim_spin.setValue(2000)
+        dim_layout.addWidget(dim_label)
+        dim_layout.addWidget(self.target_dim_spin)
+        layout.addLayout(dim_layout)
+        
+        # Constraint radio buttons
+        constraint_layout = QHBoxLayout()
+        constraint_label = QLabel("Constrain:")
+        self.width_radio = QRadioButton("Width")
+        self.height_radio = QRadioButton("Height")
+        self.width_radio.setChecked(True)
+        constraint_layout.addWidget(constraint_label)
+        constraint_layout.addWidget(self.width_radio)
+        constraint_layout.addWidget(self.height_radio)
+        layout.addLayout(constraint_layout)
+        
+        # Quality spinner
+        quality_layout = QHBoxLayout()
+        quality_label = QLabel("Quality:")
+        self.quality_spin = QSpinBox()
+        self.quality_spin.setRange(1, 100)
+        self.quality_spin.setValue(100)
+        quality_layout.addWidget(quality_label)
+        quality_layout.addWidget(self.quality_spin)
+        layout.addLayout(quality_layout)
+        
+        # Preview label for dimensions
+        self.resize_preview_label = QLabel()
+        self.resize_preview_label.setStyleSheet("color: gray;")
+        self.resize_preview_label.setWordWrap(True)  # Enable word wrap for better formatting
+        layout.addWidget(self.resize_preview_label)
+        
+        # Connect signals to parameter update method
+        self.target_dim_spin.valueChanged.connect(self.update_resize_parameters)
+        self.width_radio.toggled.connect(self.update_resize_parameters)
+        self.height_radio.toggled.connect(self.update_resize_parameters)
+        self.quality_spin.valueChanged.connect(self.update_resize_parameters)
+        
+        self.options_layout.addWidget(resize_widget)
+        
+        # Initial preview update
+        self.update_resize_parameters()
+
+    def update_resize_parameters(self):
+        """Update both action parameters and previews"""
+        # Update action parameters in queue
+        for action in self.actions_queue:
+            if action.name == "Resize Image":
+                action.params.update({
+                    'target_dimension': self.target_dim_spin.value(),
+                    'constrain_width': self.width_radio.isChecked(),
+                    'quality': self.quality_spin.value()
+                })
+        
+        # Update queue display
+        self.update_queue_display()
+        
+        # Update both dimension text and image preview
+        self.update_resize_preview()
+
+    def update_resize_preview(self):
+        """Update both dimension text and image preview with enhanced information"""
+        if not hasattr(self, 'files') or not self.files:
+            self.resize_preview_label.setText("Drop images to see dimensions")
+            self.preview_label.clear()
+            return
+            
+        try:
+            # Get number of images in queue
+            total_images = len(self.files)
+            
+            with Image.open(self.files[0]) as img:
+                # Store original dimensions
+                orig_width, orig_height = img.size
+                target_dim = self.target_dim_spin.value()
+                
+                # Calculate new dimensions
+                if self.width_radio.isChecked():
+                    new_width = target_dim
+                    new_height = int(orig_height * (target_dim / orig_width))
+                else:
+                    new_height = target_dim
+                    new_width = int(orig_width * (target_dim / orig_height))
+                
+                # Create informative preview text
+                preview_text = [
+                    "Preview of first image:",
+                    f"Original: {orig_width}px by {orig_height}px",
+                    f"Output: {new_width}px by {new_height}px"
+                ]
+                
+                # Add note about multiple images if applicable
+                if total_images > 1:
+                    preview_text.extend([
+                        "",  # Empty line for spacing
+                        f"Note: These parameters will be applied to all {total_images} images in queue.",
+                        "Final dimensions may vary based on each image's aspect ratio."
+                    ])
+                
+                self.resize_preview_label.setText("\n".join(preview_text))
+                
+                # Create preview image at target dimensions
+                preview_img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+                
+                # Convert PIL image to RGB mode if necessary
+                if preview_img.mode != 'RGB':
+                    preview_img = preview_img.convert('RGB')
+                
+                # Convert to QPixmap
+                preview_data = preview_img.tobytes("raw", "RGB")
+                qimg = QImage(preview_data, new_width, new_height, 3 * new_width, QImage.Format.Format_RGB888)
+                pixmap = QPixmap.fromImage(qimg)
+                
+                # Scale the preview image to fit the preview area while maintaining aspect ratio
+                scaled_pixmap = pixmap.scaled(
+                    self.preview_label.size(),
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation
+                )
+                
+                # Update preview label
+                self.preview_label.setPixmap(scaled_pixmap)
+                
+        except Exception as e:
+            logger.error(f"Failed to update preview: {e}")
+            self.resize_preview_label.setText("Failed to update preview")
+            self.preview_label.clear()
 
     def start_batch_processing(self):
         # Open file dialog to select multiple images
