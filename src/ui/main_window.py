@@ -216,7 +216,6 @@ class MainWindow(QMainWindow):
         # Default actions
         self.action_checks = []
         default_actions = [
-            "Increase Size (2000px)",
             "Enhance Quality",
             "Resize Image",
             "Reduce File Size",
