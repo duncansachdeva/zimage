@@ -64,6 +64,9 @@ class WorkerThread(QThread):
                 if self._is_cancelled:
                     break
                 
+                # Ensure output directory exists
+                os.makedirs(self.output_dir, exist_ok=True)
+                
                 # Generate final output path
                 output_path = self.processor.generate_output_path(
                     file, self.output_dir,
@@ -97,6 +100,10 @@ class WorkerThread(QThread):
                     
                     # Convert action name to method name
                     method_name = action.name.lower().replace(" ", "_")
+                    
+                    # Ensure the output directory for temp files exists
+                    os.makedirs(os.path.dirname(temp_file), exist_ok=True)
+                    
                     success = self.processor.process_with_verification(
                         getattr(self.processor, method_name),
                         current_file, temp_file,
@@ -125,6 +132,7 @@ class WorkerThread(QThread):
                 
             self.finished.emit()
         except Exception as e:
+            logger.error(f"Worker thread error: {str(e)}")
             self.error.emit(str(e))
 
 class BatchProcessingThread(QThread):
@@ -220,8 +228,6 @@ class MainWindow(QMainWindow):
             "Enhance Quality",
             "Resize Image",
             "Reduce File Size",
-            "Rotate Image",
-            "Add Watermark",
             "Convert to PDF",
             "Convert from PDF",
             "Upscale Image (Waifu2x)"
@@ -735,7 +741,7 @@ class MainWindow(QMainWindow):
         quality_label = QLabel("Quality:")
         self.quality_spin = QSpinBox()
         self.quality_spin.setRange(1, 100)
-        self.quality_spin.setValue(100)
+        self.quality_spin.setValue(100)  # Default to 100
         quality_layout.addWidget(quality_label)
         quality_layout.addWidget(self.quality_spin)
         layout.addLayout(quality_layout)

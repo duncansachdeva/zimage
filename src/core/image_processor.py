@@ -2,7 +2,7 @@ from PIL import Image
 import os
 import shutil
 from loguru import logger
-from typing import Tuple, Optional, Union
+from typing import Optional
 import img2pdf
 from pdf2image import convert_from_path
 from io import BytesIO
@@ -111,6 +111,9 @@ class ImageProcessor:
             bool: True if successful, False otherwise
         """
         try:
+            # Ensure output directory exists
+            os.makedirs(os.path.dirname(output_path), exist_ok=True)
+            
             with Image.open(image_path) as img:
                 # Calculate new dimensions
                 orig_width, orig_height = img.size
@@ -229,43 +232,6 @@ class ImageProcessor:
                 
         except Exception as e:
             logger.error(f"Failed to reduce file size: {e}")
-            return False
-            
-    def rotate_image(self, image_path: str, output_path: str, 
-                    degrees: int) -> bool:
-        """Rotate image by specified degrees"""
-        try:
-            with Image.open(image_path) as img:
-                rotated = img.rotate(degrees, expand=True)
-                rotated.save(output_path, quality=95, optimize=True)
-            logger.info(f"Rotated image: {image_path}")
-            return True
-        except Exception as e:
-            logger.error(f"Rotation failed: {str(e)}")
-            return False
-            
-    def add_watermark(self, image_path: str, output_path: str,
-                     watermark: Union[str, Image.Image],
-                     position: Tuple[int, int] = None) -> bool:
-        """Add watermark (text or image) to image"""
-        try:
-            with Image.open(image_path) as base_img:
-                if isinstance(watermark, str):
-                    # Create text watermark
-                    txt_layer = Image.new('RGBA', base_img.size, (255, 255, 255, 0))
-                    # Implementation of text drawing will go here
-                    base_img.paste(txt_layer, (0, 0), txt_layer)
-                else:
-                    # Image watermark
-                    if position is None:
-                        position = (base_img.width - watermark.width - 10,
-                                  base_img.height - watermark.height - 10)
-                    base_img.paste(watermark, position, watermark)
-                base_img.save(output_path, quality=95, optimize=True)
-            logger.info(f"Added watermark to: {image_path}")
-            return True
-        except Exception as e:
-            logger.error(f"Watermark addition failed: {str(e)}")
             return False
             
     def convert_to_pdf(self, image_paths: list, output_path: str) -> bool:
