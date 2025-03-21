@@ -3,7 +3,7 @@ from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QComboBox, QSpinBox, QDoubleSpinBox, QLineEdit,
                              QMessageBox, QRadioButton, QButtonGroup, QScrollArea,
                              QListWidget, QCheckBox, QInputDialog, QGroupBox,
-                             QFormLayout, QSlider)
+                             QFormLayout, QSlider, QTabWidget)
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QMimeData, QSize, QTimer
 from PyQt6.QtGui import QDragEnterEvent, QDropEvent, QPixmap, QImage
 import os
@@ -1089,209 +1089,212 @@ class MainWindow(QMainWindow):
                     widget.setParent(None)
                     widget.deleteLater()
 
+            # Create tab widget for parameters if there are selected actions
+            selected_actions = [check for check in self.action_checks if check.isChecked()]
+            if not selected_actions:
+                return
+
+            self.tab_widget = QTabWidget()
+            self.tab_widget.setDocumentMode(True)  # Makes tabs look cleaner
+            self.options_layout.addWidget(self.tab_widget)
+
             # Add parameters for selected actions
-            for check in self.action_checks:
-                if check.isChecked():
-                    group = QGroupBox(f"{check.text()} Parameters")
-                    group.setObjectName(f"{check.text()}_group")
-                    layout = QFormLayout(group)
+            for check in selected_actions:
+                # Create a tab for each action
+                tab = QWidget()
+                layout = QFormLayout(tab)
+                layout.setContentsMargins(10, 10, 10, 10)  # Add some padding
+                layout.setSpacing(10)  # Space between form elements
 
-                    if check.text() == "Enhance Quality":
-                        self.enhance_level_combo = QComboBox()
-                        self.enhance_level_combo.addItems([
-                            "High (100)", 
-                            "Medium (92)", 
-                            "Low (85)"
-                        ])
-                        self.enhance_level_combo.setCurrentText("High (100)")  # Set default to High
-                        self.enhance_level_combo.currentTextChanged.connect(self.update_action_queue)
-                        layout.addRow("Quality Level:", self.enhance_level_combo)
-                    
-                    elif check.text() == "PDF to Image":
-                        # Format selection
-                        self.format_combo = QComboBox()
-                        self.format_combo.setObjectName("format_combo")
-                        self.format_combo.addItems(["PNG", "JPG", "TIFF"])
-                        layout.addRow("Format:", self.format_combo)
-                        self.format_combo.currentTextChanged.connect(self.update_action_queue)
+                if check.text() == "Enhance Quality":
+                    self.enhance_level_combo = QComboBox()
+                    self.enhance_level_combo.addItems([
+                        "High (100)", 
+                        "Medium (92)", 
+                        "Low (85)"
+                    ])
+                    self.enhance_level_combo.setCurrentText("High (100)")
+                    self.enhance_level_combo.currentTextChanged.connect(self.update_action_queue)
+                    layout.addRow("Quality Level:", self.enhance_level_combo)
+                
+                elif check.text() == "PDF to Image":
+                    # Format selection
+                    self.format_combo = QComboBox()
+                    self.format_combo.setObjectName("format_combo")
+                    self.format_combo.addItems(["PNG", "JPG", "TIFF"])
+                    layout.addRow("Format:", self.format_combo)
+                    self.format_combo.currentTextChanged.connect(self.update_action_queue)
 
-                        # DPI selection
-                        self.dpi_spin = QSpinBox()
-                        self.dpi_spin.setObjectName("dpi_spin")
-                        self.dpi_spin.setRange(72, 600)
-                        self.dpi_spin.setValue(300)
-                        layout.addRow("DPI:", self.dpi_spin)
-                        self.dpi_spin.valueChanged.connect(self.update_action_queue)
+                    # DPI selection
+                    self.dpi_spin = QSpinBox()
+                    self.dpi_spin.setObjectName("dpi_spin")
+                    self.dpi_spin.setRange(72, 600)
+                    self.dpi_spin.setValue(300)
+                    layout.addRow("DPI:", self.dpi_spin)
+                    self.dpi_spin.valueChanged.connect(self.update_action_queue)
 
-                        # Quality selection (for JPG)
-                        self.quality_spin = QSpinBox()
-                        self.quality_spin.setObjectName("quality_spin")
-                        self.quality_spin.setRange(1, 100)
-                        self.quality_spin.setValue(95)
-                        layout.addRow("JPEG Quality:", self.quality_spin)
-                        self.quality_spin.valueChanged.connect(self.update_action_queue)
+                    # Quality selection (for JPG)
+                    self.quality_spin = QSpinBox()
+                    self.quality_spin.setObjectName("quality_spin")
+                    self.quality_spin.setRange(1, 100)
+                    self.quality_spin.setValue(95)
+                    layout.addRow("JPEG Quality:", self.quality_spin)
+                    self.quality_spin.valueChanged.connect(self.update_action_queue)
 
-                        # Color mode selection
-                        self.color_combo = QComboBox()
-                        self.color_combo.setObjectName("color_combo")
-                        self.color_combo.addItems(["RGB", "RGBA"])
-                        layout.addRow("Color Mode:", self.color_combo)
-                        self.color_combo.currentTextChanged.connect(self.update_action_queue)
+                    # Color mode selection
+                    self.color_combo = QComboBox()
+                    self.color_combo.setObjectName("color_combo")
+                    self.color_combo.addItems(["RGB", "RGBA"])
+                    layout.addRow("Color Mode:", self.color_combo)
+                    self.color_combo.currentTextChanged.connect(self.update_action_queue)
 
-                        # Enable/disable quality spin based on format
-                        self.format_combo.currentTextChanged.connect(
-                            lambda fmt: self.quality_spin.setEnabled(fmt.upper() == 'JPG')
-                        )
-                        self.quality_spin.setEnabled(False)  # Initially disabled as PNG is default
+                    # Enable/disable quality spin based on format
+                    self.format_combo.currentTextChanged.connect(
+                        lambda fmt: self.quality_spin.setEnabled(fmt.upper() == 'JPG')
+                    )
+                    self.quality_spin.setEnabled(False)  # Initially disabled as PNG is default
 
-                    elif check.text() == "Image to PDF":
-                        # Combine files option
-                        self.combine_pdf_check = QCheckBox("Combine all images into one PDF")
-                        self.combine_pdf_check.setObjectName("combine_pdf_check")
-                        self.combine_pdf_check.setChecked(True)
-                        layout.addRow(self.combine_pdf_check)
-                        self.combine_pdf_check.stateChanged.connect(self.update_action_queue)
+                elif check.text() == "Image to PDF":
+                    # Combine files option
+                    self.combine_pdf_check = QCheckBox("Combine all images into one PDF")
+                    self.combine_pdf_check.setObjectName("combine_pdf_check")
+                    self.combine_pdf_check.setChecked(True)
+                    layout.addRow(self.combine_pdf_check)
+                    self.combine_pdf_check.stateChanged.connect(self.update_action_queue)
 
-                        # Orientation selection
-                        self.orientation_combo = QComboBox()
-                        self.orientation_combo.setObjectName("orientation_combo")
-                        self.orientation_combo.addItems(["Auto", "Portrait", "Landscape"])
-                        layout.addRow("Orientation:", self.orientation_combo)
-                        self.orientation_combo.currentTextChanged.connect(self.update_action_queue)
+                    # Orientation selection
+                    self.orientation_combo = QComboBox()
+                    self.orientation_combo.setObjectName("orientation_combo")
+                    self.orientation_combo.addItems(["Auto", "Portrait", "Landscape"])
+                    layout.addRow("Orientation:", self.orientation_combo)
+                    self.orientation_combo.currentTextChanged.connect(self.update_action_queue)
 
-                        # Images per page selection
-                        self.images_per_page_combo = QComboBox()
-                        self.images_per_page_combo.setObjectName("images_per_page_combo")
-                        self.images_per_page_combo.addItems(["1", "2", "4", "6"])
-                        layout.addRow("Images per Page:", self.images_per_page_combo)
-                        self.images_per_page_combo.currentTextChanged.connect(self.update_action_queue)
+                    # Images per page selection
+                    self.images_per_page_combo = QComboBox()
+                    self.images_per_page_combo.setObjectName("images_per_page_combo")
+                    self.images_per_page_combo.addItems(["1", "2", "4", "6"])
+                    layout.addRow("Images per Page:", self.images_per_page_combo)
+                    self.images_per_page_combo.currentTextChanged.connect(self.update_action_queue)
 
-                        # Fit mode selection
-                        self.fit_mode_combo = QComboBox()
-                        self.fit_mode_combo.setObjectName("fit_mode_combo")
-                        self.fit_mode_combo.addItems(["Fit to page", "Stretch to fill", "Actual size"])
-                        layout.addRow("Fit Mode:", self.fit_mode_combo)
-                        self.fit_mode_combo.currentTextChanged.connect(self.update_action_queue)
+                    # Fit mode selection
+                    self.fit_mode_combo = QComboBox()
+                    self.fit_mode_combo.setObjectName("fit_mode_combo")
+                    self.fit_mode_combo.addItems(["Fit to page", "Stretch to fill", "Actual size"])
+                    layout.addRow("Fit Mode:", self.fit_mode_combo)
+                    self.fit_mode_combo.currentTextChanged.connect(self.update_action_queue)
 
-                        # PDF Quality selection
-                        self.pdf_quality_combo = QComboBox()
-                        self.pdf_quality_combo.setObjectName("pdf_quality_combo")
-                        self.pdf_quality_combo.addItems(["High", "Medium", "Low"])
-                        layout.addRow("Quality:", self.pdf_quality_combo)
-                        self.pdf_quality_combo.currentTextChanged.connect(self.update_action_queue)
+                    # PDF Quality selection
+                    self.pdf_quality_combo = QComboBox()
+                    self.pdf_quality_combo.setObjectName("pdf_quality_combo")
+                    self.pdf_quality_combo.addItems(["High", "Medium", "Low"])
+                    layout.addRow("Quality:", self.pdf_quality_combo)
+                    self.pdf_quality_combo.currentTextChanged.connect(self.update_action_queue)
 
-                        # Preview label
-                        self.pdf_preview_label = QLabel()
-                        self.pdf_preview_label.setObjectName("pdf_preview_label")
-                        self.pdf_preview_label.setStyleSheet("color: gray;")
-                        self.pdf_preview_label.setWordWrap(True)
-                        layout.addRow(self.pdf_preview_label)
+                    # Preview label
+                    self.pdf_preview_label = QLabel()
+                    self.pdf_preview_label.setObjectName("pdf_preview_label")
+                    self.pdf_preview_label.setStyleSheet("color: gray;")
+                    self.pdf_preview_label.setWordWrap(True)
+                    layout.addRow(self.pdf_preview_label)
 
-                    elif check.text() == "Resize Image":
-                        # Target dimension input
-                        dim_layout = QHBoxLayout()
-                        dim_label = QLabel("Target dimension (px):")
-                        self.target_dim_spin = QSpinBox()
-                        self.target_dim_spin.setObjectName("target_dim_spin")
-                        self.target_dim_spin.setRange(1, 10000)
-                        self.target_dim_spin.setValue(2000)
-                        dim_layout.addWidget(dim_label)
-                        dim_layout.addWidget(self.target_dim_spin)
-                        layout.addRow(dim_layout)
+                elif check.text() == "Resize Image":
+                    # Target dimension input
+                    dim_layout = QHBoxLayout()
+                    dim_label = QLabel("Target dimension (px):")
+                    self.target_dim_spin = QSpinBox()
+                    self.target_dim_spin.setObjectName("target_dim_spin")
+                    self.target_dim_spin.setRange(1, 10000)
+                    self.target_dim_spin.setValue(2000)
+                    dim_layout.addWidget(dim_label)
+                    dim_layout.addWidget(self.target_dim_spin)
+                    layout.addRow(dim_layout)
 
-                        # Constraint radio buttons
-                        constraint_layout = QHBoxLayout()
-                        constraint_label = QLabel("Constrain:")
-                        self.width_radio = QRadioButton("Width")
-                        self.width_radio.setObjectName("width_radio")
-                        self.height_radio = QRadioButton("Height")
-                        self.height_radio.setObjectName("height_radio")
-                        self.width_radio.setChecked(True)
-                        constraint_layout.addWidget(constraint_label)
-                        constraint_layout.addWidget(self.width_radio)
-                        constraint_layout.addWidget(self.height_radio)
-                        layout.addRow(constraint_layout)
+                    # Constraint radio buttons
+                    constraint_layout = QHBoxLayout()
+                    constraint_label = QLabel("Constrain:")
+                    self.width_radio = QRadioButton("Width")
+                    self.width_radio.setObjectName("width_radio")
+                    self.height_radio = QRadioButton("Height")
+                    self.height_radio.setObjectName("height_radio")
+                    self.width_radio.setChecked(True)
+                    constraint_layout.addWidget(constraint_label)
+                    constraint_layout.addWidget(self.width_radio)
+                    constraint_layout.addWidget(self.height_radio)
+                    layout.addRow(constraint_layout)
 
-                        # Quality spinner
-                        quality_layout = QHBoxLayout()
-                        quality_label = QLabel("Quality:")
-                        self.quality_spin = QSpinBox()
-                        self.quality_spin.setObjectName("quality_spin")
-                        self.quality_spin.setRange(1, 100)
-                        self.quality_spin.setValue(100)  # Default to 100
-                        quality_layout.addWidget(quality_label)
-                        quality_layout.addWidget(self.quality_spin)
-                        layout.addRow(quality_layout)
+                    # Quality spinner
+                    quality_layout = QHBoxLayout()
+                    quality_label = QLabel("Quality:")
+                    self.quality_spin = QSpinBox()
+                    self.quality_spin.setObjectName("quality_spin")
+                    self.quality_spin.setRange(1, 100)
+                    self.quality_spin.setValue(100)  # Default to 100
+                    quality_layout.addWidget(quality_label)
+                    quality_layout.addWidget(self.quality_spin)
+                    layout.addRow(quality_layout)
 
-                        # Preview label for dimensions
-                        self.resize_preview_label = QLabel()
-                        self.resize_preview_label.setObjectName("resize_preview_label")
-                        self.resize_preview_label.setStyleSheet("color: gray;")
-                        self.resize_preview_label.setWordWrap(True)
-                        layout.addRow(self.resize_preview_label)
+                    # Preview label for dimensions
+                    self.resize_preview_label = QLabel()
+                    self.resize_preview_label.setObjectName("resize_preview_label")
+                    self.resize_preview_label.setStyleSheet("color: gray;")
+                    self.resize_preview_label.setWordWrap(True)
+                    layout.addRow(self.resize_preview_label)
 
-                        # Connect signals
-                        self.target_dim_spin.valueChanged.connect(self.update_resize_parameters)
-                        self.width_radio.toggled.connect(self.update_resize_parameters)
-                        self.height_radio.toggled.connect(self.update_resize_parameters)
-                        self.quality_spin.valueChanged.connect(self.update_resize_parameters)
+                    # Connect signals
+                    self.target_dim_spin.valueChanged.connect(self.update_resize_parameters)
+                    self.width_radio.toggled.connect(self.update_resize_parameters)
+                    self.height_radio.toggled.connect(self.update_resize_parameters)
+                    self.quality_spin.valueChanged.connect(self.update_resize_parameters)
 
-                    elif check.text() == "Reduce File Size":
-                        # Target size input
-                        size_layout = QHBoxLayout()
-                        size_label = QLabel("Target Size (MB):")
-                        self.target_size_spin = QDoubleSpinBox()
-                        self.target_size_spin.setObjectName("target_size_spin")
-                        self.target_size_spin.setRange(0.1, 100.0)  # 100KB to 100MB
-                        self.target_size_spin.setDecimals(1)
-                        self.target_size_spin.setSingleStep(0.1)
-                        self.target_size_spin.setValue(1.0)  # Default 1MB
-                        size_layout.addWidget(size_label)
-                        size_layout.addWidget(self.target_size_spin)
-                        layout.addRow(size_layout)
+                elif check.text() == "Reduce File Size":
+                    # Target size input
+                    size_layout = QHBoxLayout()
+                    size_label = QLabel("Target Size (MB):")
+                    self.target_size_spin = QDoubleSpinBox()
+                    self.target_size_spin.setObjectName("target_size_spin")
+                    self.target_size_spin.setRange(0.1, 100.0)  # 100KB to 100MB
+                    self.target_size_spin.setDecimals(1)
+                    self.target_size_spin.setSingleStep(0.1)
+                    self.target_size_spin.setValue(1.0)  # Default 1MB
+                    size_layout.addWidget(size_label)
+                    size_layout.addWidget(self.target_size_spin)
+                    layout.addRow(size_layout)
 
-                        # Quality priority slider
-                        self.quality_priority_slider = QSlider(Qt.Orientation.Horizontal)
-                        self.quality_priority_slider.setObjectName("quality_priority_slider")
-                        self.quality_priority_slider.setRange(0, 100)
-                        self.quality_priority_slider.setValue(70)
-                        layout.addRow("Quality Priority:", self.quality_priority_slider)
+                    # Quality priority slider
+                    self.quality_priority_slider = QSlider(Qt.Orientation.Horizontal)
+                    self.quality_priority_slider.setObjectName("quality_priority_slider")
+                    self.quality_priority_slider.setRange(0, 100)
+                    self.quality_priority_slider.setValue(70)
+                    layout.addRow("Quality Priority:", self.quality_priority_slider)
 
-                        # Preview label
-                        self.resize_preview_label = QLabel()
-                        self.resize_preview_label.setObjectName("resize_preview_label")
-                        self.resize_preview_label.setStyleSheet("color: gray;")
-                        self.resize_preview_label.setWordWrap(True)
-                        layout.addRow(self.resize_preview_label)
+                    # Preview label
+                    self.resize_preview_label = QLabel()
+                    self.resize_preview_label.setObjectName("resize_preview_label")
+                    self.resize_preview_label.setStyleSheet("color: gray;")
+                    self.resize_preview_label.setWordWrap(True)
+                    layout.addRow(self.resize_preview_label)
 
-                        # Connect signals
-                        self.target_size_spin.valueChanged.connect(self.update_reduce_size_parameters)
-                        self.quality_priority_slider.valueChanged.connect(self.update_reduce_size_parameters)
+                    # Connect signals
+                    self.target_size_spin.valueChanged.connect(self.update_reduce_size_parameters)
+                    self.quality_priority_slider.valueChanged.connect(self.update_reduce_size_parameters)
 
-                    elif check.text() == "Upscale Image (Waifu2x)":
-                        # Scale factor
-                        self.scale_factor_combo = QComboBox()
-                        self.scale_factor_combo.setObjectName("scale_factor_combo")
-                        self.scale_factor_combo.addItems(["2x", "4x", "8x"])
-                        layout.addRow("Scale Factor:", self.scale_factor_combo)
-                        self.scale_factor_combo.currentTextChanged.connect(self.update_action_queue)
+                elif check.text() == "Upscale Image (Waifu2x)":
+                    # Scale factor
+                    self.scale_factor_combo = QComboBox()
+                    self.scale_factor_combo.setObjectName("scale_factor_combo")
+                    self.scale_factor_combo.addItems(["2x", "4x", "8x"])
+                    layout.addRow("Scale Factor:", self.scale_factor_combo)
+                    self.scale_factor_combo.currentTextChanged.connect(self.update_action_queue)
 
-                        # Noise reduction
-                        self.noise_level_combo = QComboBox()
-                        self.noise_level_combo.setObjectName("noise_level_combo")
-                        self.noise_level_combo.addItems(["None", "Low", "Medium", "High"])
-                        layout.addRow("Noise Reduction:", self.noise_level_combo)
-                        self.noise_level_combo.currentTextChanged.connect(self.update_action_queue)
+                    # Noise reduction
+                    self.noise_level_combo = QComboBox()
+                    self.noise_level_combo.setObjectName("noise_level_combo")
+                    self.noise_level_combo.addItems(["None", "Low", "Medium", "High"])
+                    layout.addRow("Noise Reduction:", self.noise_level_combo)
+                    self.noise_level_combo.currentTextChanged.connect(self.update_action_queue)
 
-                    self.options_layout.addWidget(group)
-
-                    # Initial preview update for actions that need it
-                    if check.text() == "Resize Image":
-                        self.update_resize_preview()
-                    elif check.text() == "Reduce File Size":
-                        self.update_reduce_size_preview()
-                    elif check.text() == "Image to PDF":
-                        self.update_pdf_preview()
+                # Add the tab with a clean title
+                self.tab_widget.addTab(tab, check.text().replace(" (Waifu2x)", ""))
 
             # Save current actions to config
             self.save_config()
