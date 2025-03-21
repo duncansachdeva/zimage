@@ -15,6 +15,36 @@ from src.core.optimized_processor import OptimizedProcessor
 from io import BytesIO
 import shutil
 import fitz
+from pdf2image import convert_from_path
+import logging
+
+CONFIG_FILE = 'zimage_config.json'
+
+def load_config():
+    """Load configuration from file"""
+    if os.path.exists(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE, 'r') as f:
+                return json.load(f)
+        except Exception as e:
+            logger.error(f"Failed to load config: {e}")
+            return get_default_config()
+    return get_default_config()
+
+def save_config(config):
+    """Save configuration to file"""
+    try:
+        with open(CONFIG_FILE, 'w') as f:
+            json.dump(config, f, indent=4)
+    except Exception as e:
+        logger.error(f"Failed to save config: {e}")
+
+def get_default_config():
+    """Get default configuration"""
+    return {
+        'output_dir': os.path.join(os.path.expanduser("~"), "Documents", "ZImage"),
+        'last_actions': []  # Store last selected actions
+    }
 
 class Action:
     def __init__(self, name, params=None):
@@ -224,17 +254,139 @@ class BatchProcessingThread(QThread):
         self.processing_finished.emit(results)
 
 class MainWindow(QMainWindow):
+    """Main window of the application."""
+
     def __init__(self, theme_manager=None):
+        """Initialize the main window."""
         super().__init__()
+        
+        # Initialize logger
+        self.logger = logging.getLogger(__name__)
+        
+        # Set theme manager
         self.theme_manager = theme_manager
-        self.processor = ImageProcessor()
-        self.default_output_dir = os.path.join(os.path.expanduser("~"), "Documents", "ZImage")
-        self.queues_dir = os.path.join(self.default_output_dir, "saved_queues")
-        os.makedirs(self.queues_dir, exist_ok=True)
-        os.makedirs(self.default_output_dir, exist_ok=True)
-        self.actions_queue = []  # List to store queued actions
+        
+        # Initialize image processor
+        self.image_processor = ImageProcessor()
+        
+        # Load configuration
+        self.config = self.load_config()
+        
+        # Set output directory
+        self.output_dir = self.config['output_dir']
+        
+        # Initialize variables
+        self.files = []
+        self.actions_queue = []
+        self.action_checks = []
+        self.current_widgets = {}
+        self.current_worker = None
+        
+        # Initialize UI components
         self.init_ui()
         
+        # Restore last actions if available
+        if 'last_actions' in self.config:
+            self.restore_last_actions(self.config['last_actions'])
+        
+    def load_config(self):
+        """Load configuration from file or create default."""
+        try:
+            if os.path.exists(CONFIG_FILE):
+                with open(CONFIG_FILE, 'r') as f:
+                    config = json.load(f)
+            else:
+                config = self.get_default_config()
+                self.show_first_time_setup(config)
+                self.save_config(config)
+            
+            # Ensure output directory exists
+            os.makedirs(config['output_dir'], exist_ok=True)
+            
+            return config
+            
+        except Exception as e:
+            self.logger.error(f"Failed to load config: {str(e)}")
+            config = self.get_default_config()
+            os.makedirs(config['output_dir'], exist_ok=True)
+            return config
+    
+    def get_default_config(self):
+        """Get default configuration."""
+        return {
+            'output_dir': os.path.join(os.path.expanduser('~'), 'Documents', 'ZImage'),
+            'last_actions': []
+        }
+    
+    def save_config(self, config=None):
+        """Save configuration to file."""
+        try:
+            if config is None:
+                config = {
+                    'output_dir': self.output_dir_input.text(),
+                    'last_actions': self.get_selected_actions()
+                }
+            
+            with open(CONFIG_FILE, 'w') as f:
+                json.dump(config, f, indent=4)
+                
+        except Exception as e:
+            self.logger.error(f"Failed to save config: {str(e)}")
+    
+    def show_first_time_setup(self, config):
+        """Show first-time setup dialog."""
+        try:
+            msg = QMessageBox()
+            msg.setWindowTitle("Welcome to ZImage")
+            msg.setText("Please select a default output directory for your processed files.")
+            msg.setIcon(QMessageBox.Icon.Information)
+            msg.setStandardButtons(QMessageBox.StandardButton.Ok)
+            msg.exec()
+            
+            dir_path = QFileDialog.getExistingDirectory(
+                self,
+                "Select Output Directory",
+                os.path.expanduser("~"),
+                QFileDialog.Option.ShowDirsOnly
+            )
+            
+            if dir_path:
+                config['output_dir'] = dir_path
+                
+        except Exception as e:
+            self.logger.error(f"Failed to show first-time setup: {str(e)}")
+    
+    def get_selected_actions(self):
+        """Get list of currently selected actions."""
+        return [check.text() for check in self.action_checks if check.isChecked()]
+    
+    def restore_last_actions(self, actions):
+        """Restore last selected actions."""
+        try:
+            for check in self.action_checks:
+                check.setChecked(check.text() in actions)
+            self.update_action_queue()
+        except Exception as e:
+            self.logger.error(f"Failed to restore last actions: {str(e)}")
+
+    def update_files_display(self):
+        """Update the drag & drop area to show loaded files"""
+        if not self.files:
+            self.drop_area.setText("Drag and drop images here")
+            return
+            
+        file_count = len(self.files)
+        file_list = ", ".join(os.path.basename(f) for f in self.files)
+        self.drop_area.setText(f"Loaded Files ({file_count}):\n{file_list}")
+
+    def clear_files(self):
+        """Clear all loaded files"""
+        self.files.clear()
+        self.update_files_display()
+        self.preview_label.clear()
+        self.preview_label.setText("Preview")
+        logger.info("Cleared all files")
+
     def init_ui(self):
         """Initialize the user interface"""
         self.setWindowTitle('ZImage Processor')
@@ -251,7 +403,7 @@ class MainWindow(QMainWindow):
         output_dir_layout.setContentsMargins(0, 0, 0, 0)
         
         output_dir_label = QLabel("Output Directory:")
-        self.output_dir_input = QLineEdit(self.default_output_dir)
+        self.output_dir_input = QLineEdit(self.config['output_dir'])
         browse_btn = QPushButton("Browse...")
         
         output_dir_layout.addWidget(output_dir_label)
@@ -284,6 +436,11 @@ class MainWindow(QMainWindow):
         """)
         self.drop_area.setMinimumHeight(200)
         left_layout.addWidget(self.drop_area)
+        
+        # Add Clear Files button below drop area
+        clear_files_btn = QPushButton("Clear Files")
+        clear_files_btn.clicked.connect(self.clear_files)
+        left_layout.addWidget(clear_files_btn)
         
         # Operations Section
         operations_group = QWidget()
@@ -426,10 +583,6 @@ class MainWindow(QMainWindow):
         # Enable drag and drop
         self.setAcceptDrops(True)
         
-        # Initialize variables
-        self.files = []
-        self.current_worker = None
-        
         # Initial options update
         self.update_action_queue()
         
@@ -445,13 +598,6 @@ class MainWindow(QMainWindow):
         batch_layout.addWidget(self.progress_bar)
         layout.addLayout(batch_layout)
         
-        # Initialize variables
-        self.files = []
-        self.current_worker = None
-        
-        # Initial options update
-        self.update_action_queue()
-
     def update_preview(self, file_path: str):
         """Update the preview image"""
         try:
@@ -464,22 +610,26 @@ class MainWindow(QMainWindow):
                         self.pdf_preview.load_pdf(file_path)
                     return
                     
-                # Otherwise, show first page preview
-                doc = fitz.open(file_path)
-                if doc.page_count > 0:
-                    page = doc[0]
-                    pix = page.get_pixmap(matrix=fitz.Matrix(1, 1))
-                    img = QImage(pix.samples, pix.width, pix.height, pix.stride, QImage.Format.Format_RGB888)
-                    pixmap = QPixmap.fromImage(img)
-                    
-                    # Scale pixmap to fit preview area
-                    scaled_pixmap = pixmap.scaled(
-                        self.preview_label.size(),
-                        Qt.AspectRatioMode.KeepAspectRatio,
-                        Qt.TransformationMode.SmoothTransformation
-                    )
-                    self.preview_label.setPixmap(scaled_pixmap)
-                doc.close()
+                try:
+                    # Otherwise, show first page preview
+                    doc = fitz.open(file_path)
+                    if doc.page_count > 0:
+                        page = doc[0]
+                        pix = page.get_pixmap(matrix=fitz.Matrix(1, 1))
+                        img = QImage(pix.samples, pix.width, pix.height, pix.stride, QImage.Format.Format_RGB888)
+                        pixmap = QPixmap.fromImage(img)
+                        
+                        # Scale pixmap to fit preview area
+                        scaled_pixmap = pixmap.scaled(
+                            self.preview_label.size(),
+                            Qt.AspectRatioMode.KeepAspectRatio,
+                            Qt.TransformationMode.SmoothTransformation
+                        )
+                        self.preview_label.setPixmap(scaled_pixmap)
+                    doc.close()
+                except Exception as pdf_error:
+                    logger.error(f"PDF preview failed: {pdf_error}")
+                    self.preview_label.setText("Unable to preview PDF. The file may be corrupted or password-protected.")
                 return
             
             # Handle image files
@@ -492,42 +642,76 @@ class MainWindow(QMainWindow):
                     Qt.TransformationMode.SmoothTransformation
                 )
                 self.preview_label.setPixmap(scaled_pixmap)
+            else:
+                self.preview_label.setText("Unable to load image. The file may be corrupted or in an unsupported format.")
         except Exception as e:
             logger.error(f"Preview update failed: {str(e)}")
             self.preview_label.setText("Preview not available")
+            QMessageBox.warning(self, "Preview Error", f"Failed to generate preview: {str(e)}")
             
     def update_action_queue(self):
-        """Update the action queue based on selected actions"""
+        """Update the actions queue based on selected actions"""
         try:
             self.actions_queue.clear()
+            
+            # Check for incompatible actions
+            has_pdf_files = any(f.lower().endswith('.pdf') for f in self.files) if self.files else False
+            has_image_files = any(not f.lower().endswith('.pdf') for f in self.files) if self.files else False
             
             for check in self.action_checks:
                 if not check.isChecked():
                     continue
                     
-                # Initialize action with default parameters
-                default_params = {}
                 action_name = check.text()
                 
-                if action_name == "PDF to Image":
+                # Validate action compatibility
+                if has_pdf_files and action_name in ["Enhance Quality", "Resize Image", "Image to PDF"]:
+                    check.setChecked(False)
+                    QMessageBox.warning(self, "Incompatible Action",
+                                      f"'{action_name}' cannot be used with PDF files. Please convert PDFs to images first.")
+                    continue
+                    
+                if has_image_files and action_name == "PDF to Image":
+                    check.setChecked(False)
+                    QMessageBox.warning(self, "Incompatible Action",
+                                      "'PDF to Image' can only be used with PDF files.")
+                    continue
+                
+                # Initialize action with default parameters
+                default_params = {}
+                
+                if action_name == "Enhance Quality":
+                    default_params = {
+                        'level': 'High'
+                    }
+                    if hasattr(self, 'enhance_level_combo') and self.enhance_level_combo.isVisible():
+                        try:
+                            # Extract level from display text (e.g., "High (100)" -> "High")
+                            level_text = self.enhance_level_combo.currentText().split()[0]
+                            default_params.update({
+                                'level': level_text
+                            })
+                        except RuntimeError:
+                            logger.debug(f"Widget for {action_name} was deleted, using default values")
+                
+                elif action_name == "PDF to Image":
                     default_params = {
                         'format': 'png',
                         'dpi': 300,
                         'quality': 95,
                         'color_mode': 'RGB'
                     }
-                    if hasattr(self, 'format_combo'):
+                    if hasattr(self, 'format_combo') and self.format_combo.isVisible():
                         try:
-                            if self.format_combo.isVisible():
-                                default_params.update({
-                                    'format': self.format_combo.currentText().lower(),
-                                    'dpi': self.dpi_spin.value(),
-                                    'quality': self.quality_spin.value(),
-                                    'color_mode': self.color_combo.currentText()
-                                })
+                            default_params.update({
+                                'format': self.format_combo.currentText().lower(),
+                                'dpi': self.dpi_spin.value(),
+                                'quality': self.quality_spin.value(),
+                                'color_mode': self.color_combo.currentText()
+                            })
                         except RuntimeError:
                             logger.debug(f"Widget for {action_name} was deleted, using default values")
-                            
+                        
                 elif action_name == "Image to PDF":
                     default_params = {
                         'combine_files': True,
@@ -548,54 +732,37 @@ class MainWindow(QMainWindow):
                                 })
                         except RuntimeError:
                             logger.debug(f"Widget for {action_name} was deleted, using default values")
-                            
+                        
                 elif action_name == "Resize Image":
                     default_params = {
-                        'target_dimension': 2000,
-                        'constrain_width': True,
-                        'quality': 100
+                        'width': 2500,
+                        'height': 0,
+                        'maintain_aspect': True
                     }
-                    if hasattr(self, 'target_dim_spin'):
+                    if hasattr(self, 'width_spin'):
                         try:
-                            if self.target_dim_spin.isVisible():
+                            if self.width_spin.isVisible():
                                 default_params.update({
-                                    'target_dimension': self.target_dim_spin.value(),
-                                    'constrain_width': self.width_radio.isChecked(),
-                                    'quality': self.quality_spin.value()
+                                    'width': self.width_spin.value(),
+                                    'height': self.height_spin.value(),
+                                    'maintain_aspect': self.maintain_aspect_check.isChecked()
                                 })
                         except RuntimeError:
                             logger.debug(f"Widget for {action_name} was deleted, using default values")
-                            
+                        
                 elif action_name == "Reduce File Size":
                     default_params = {
-                        'target_size_mb': 1.0,
-                        'quality_priority': 0.7
+                        'target_size_mb': 0.5
                     }
                     if hasattr(self, 'target_size_spin'):
                         try:
                             if self.target_size_spin.isVisible():
                                 default_params.update({
-                                    'target_size_mb': self.target_size_spin.value(),
-                                    'quality_priority': self.quality_priority_slider.value() / 100.0
+                                    'target_size_mb': self.target_size_spin.value()
                                 })
                         except RuntimeError:
                             logger.debug(f"Widget for {action_name} was deleted, using default values")
-                            
-                elif action_name == "Enhance Quality":
-                    default_params = {
-                        'level': 'High',
-                        'sharpness': 0.5
-                    }
-                    if hasattr(self, 'enhance_level_combo'):
-                        try:
-                            if self.enhance_level_combo.isVisible():
-                                default_params.update({
-                                    'level': self.enhance_level_combo.currentText().lower(),
-                                    'sharpness': self.sharpness_slider.value() / 100.0
-                                })
-                        except RuntimeError:
-                            logger.debug(f"Widget for {action_name} was deleted, using default values")
-                            
+                        
                 elif action_name == "Upscale Image (Waifu2x)":
                     default_params = {
                         'scale': 2,
@@ -614,7 +781,8 @@ class MainWindow(QMainWindow):
                             logger.debug(f"Widget for {action_name} was deleted, using default values")
                 
                 # Create action with parameters
-                action = Action(action_name, default_params)
+                action = Action(action_name)
+                action.params = default_params
                 self.actions_queue.append(action)
             
             # Update the queue display
@@ -622,6 +790,7 @@ class MainWindow(QMainWindow):
             
         except Exception as e:
             logger.error(f"Error updating action queue: {e}")
+            QMessageBox.warning(self, "Error", f"Failed to update action queue: {str(e)}")
             # Ensure the queue display is still updated even if there was an error
             self.update_queue_display()
         
@@ -673,6 +842,9 @@ class MainWindow(QMainWindow):
         )
         if dir_path:
             self.output_dir_input.setText(dir_path)
+            self.output_dir = dir_path  # Update the output_dir attribute
+            self.config['output_dir'] = dir_path
+            self.save_config()
             
     def process_files(self):
         """Process the selected files"""
@@ -686,12 +858,15 @@ class MainWindow(QMainWindow):
                               "Please select at least one action to perform")
             return
             
-        # Get output directory from input field
+        # Get output directory from input field and update the attribute
         output_dir = self.output_dir_input.text()
         if not output_dir:
             QMessageBox.warning(self, "No Output Directory", 
                               "Please specify an output directory")
             return
+            
+        # Update the output_dir attribute
+        self.output_dir = output_dir
             
         # Create output directory if it doesn't exist
         try:
@@ -706,7 +881,7 @@ class MainWindow(QMainWindow):
         
         # Create worker thread with action queue
         self.current_worker = WorkerThread(
-            self.processor,
+            self.image_processor,
             self.actions_queue,
             self.files,
             output_dir,
@@ -854,39 +1029,48 @@ class MainWindow(QMainWindow):
             event.acceptProposedAction()
             
     def dropEvent(self, event: QDropEvent):
-        """Handle drop events"""
-        files = []
-        for url in event.mimeData().urls():
-            path = url.toLocalFile()
-            if self.processor.validate_file(path):
-                files.append(path)
-            
-        if files:
-            self.files = files
-            # Update drop area text based on file type
-            if any(f.lower().endswith('.pdf') for f in files):
-                self.drop_area.setText(f"{len(files)} PDF file(s) selected")
-                # Auto-select PDF to Image action if no actions are selected
-                pdf_to_image_selected = False
-                for check in self.action_checks:
-                    if check.text() == "PDF to Image" and check.isChecked():
-                        pdf_to_image_selected = True
-                        break
-                if not pdf_to_image_selected:
-                    for check in self.action_checks:
-                        if check.text() == "PDF to Image":
-                            check.setChecked(True)
+        """Handle dropped files"""
+        try:
+            urls = event.mimeData().urls()
+            if urls:
+                # Clear existing files if switching file types
+                first_file = urls[0].toLocalFile().lower()
+                is_pdf = first_file.endswith('.pdf')
+                
+                if self.files:
+                    existing_is_pdf = self.files[0].lower().endswith('.pdf')
+                    if is_pdf != existing_is_pdf:
+                        # Ask user before clearing different file types
+                        msg = QMessageBox()
+                        msg.setIcon(QMessageBox.Icon.Question)
+                        msg.setWindowTitle("Different File Type")
+                        msg.setText("You are dropping a different type of file. Would you like to clear existing files?")
+                        msg.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+                        if msg.exec() == QMessageBox.StandardButton.Yes:
+                            self.files.clear()
                         else:
-                            check.setChecked(False)
-            else:
-                self.drop_area.setText(f"{len(files)} image file(s) selected")
-            
-            # Show preview of first file
-            if len(files) > 0:
-                self.update_preview(files[0])
-        else:
-            QMessageBox.warning(self, "Invalid Files", 
-                              "No valid image or PDF files were dropped")
+                            event.ignore()
+                            return
+                
+                # Add dropped files to the list
+                for url in urls:
+                    file_path = url.toLocalFile()
+                    if self.image_processor.validate_file(file_path):
+                        self.files.append(file_path)
+                
+                # Update the files display
+                self.update_files_display()
+                
+                # Update preview with first file
+                if self.files:
+                    self.update_preview(self.files[0])
+                    
+                event.accept()
+                
+        except Exception as e:
+            logger.error(f"Drop event failed: {e}")
+            QMessageBox.warning(self, "Error", f"Failed to load files: {str(e)}")
+            event.ignore()
 
     def setup_parameters(self):
         """Set up parameter widgets based on selected actions"""
@@ -912,7 +1096,18 @@ class MainWindow(QMainWindow):
                     group.setObjectName(f"{check.text()}_group")
                     layout = QFormLayout(group)
 
-                    if check.text() == "PDF to Image":
+                    if check.text() == "Enhance Quality":
+                        self.enhance_level_combo = QComboBox()
+                        self.enhance_level_combo.addItems([
+                            "High (100)", 
+                            "Medium (92)", 
+                            "Low (85)"
+                        ])
+                        self.enhance_level_combo.setCurrentText("High (100)")  # Set default to High
+                        self.enhance_level_combo.currentTextChanged.connect(self.update_action_queue)
+                        layout.addRow("Quality Level:", self.enhance_level_combo)
+                    
+                    elif check.text() == "PDF to Image":
                         # Format selection
                         self.format_combo = QComboBox()
                         self.format_combo.setObjectName("format_combo")
@@ -1073,22 +1268,6 @@ class MainWindow(QMainWindow):
                         self.target_size_spin.valueChanged.connect(self.update_reduce_size_parameters)
                         self.quality_priority_slider.valueChanged.connect(self.update_reduce_size_parameters)
 
-                    elif check.text() == "Enhance Quality":
-                        # Enhancement level
-                        self.enhance_level_combo = QComboBox()
-                        self.enhance_level_combo.setObjectName("enhance_level_combo")
-                        self.enhance_level_combo.addItems(["Low", "Medium", "High"])
-                        layout.addRow("Enhancement Level:", self.enhance_level_combo)
-                        self.enhance_level_combo.currentTextChanged.connect(self.update_action_queue)
-
-                        # Sharpness
-                        self.sharpness_slider = QSlider(Qt.Orientation.Horizontal)
-                        self.sharpness_slider.setObjectName("sharpness_slider")
-                        self.sharpness_slider.setRange(0, 100)
-                        self.sharpness_slider.setValue(50)
-                        layout.addRow("Sharpness:", self.sharpness_slider)
-                        self.sharpness_slider.valueChanged.connect(self.update_action_queue)
-
                     elif check.text() == "Upscale Image (Waifu2x)":
                         # Scale factor
                         self.scale_factor_combo = QComboBox()
@@ -1114,12 +1293,14 @@ class MainWindow(QMainWindow):
                     elif check.text() == "Image to PDF":
                         self.update_pdf_preview()
 
+            # Save current actions to config
+            self.save_config()
+            
             # Schedule the action queue update
             QTimer.singleShot(50, self.delayed_update_queue)
 
         except Exception as e:
             logger.error(f"Error in setup_parameters: {e}")
-            # If there's an error, ensure we still update the action queue
             QTimer.singleShot(50, self.delayed_update_queue)
 
     def delayed_update_queue(self):
@@ -1149,7 +1330,7 @@ class MainWindow(QMainWindow):
             return
         
         # Instantiate the OptimizedProcessor
-        self.processor = OptimizedProcessor()
+        self.image_processor = OptimizedProcessor()
         
         # Setup progress bar and disable the button during processing
         self.progress_bar.setValue(0)
@@ -1157,7 +1338,7 @@ class MainWindow(QMainWindow):
         self.batch_process_button.setEnabled(False)
         
         # Create and start the batch processing thread
-        self.batch_thread = BatchProcessingThread(self.processor, files, actions, output_dir, "default", "")
+        self.batch_thread = BatchProcessingThread(self.image_processor, files, actions, output_dir, "default", "")
         self.batch_thread.progress_update.connect(self.on_progress_update)
         self.batch_thread.processing_finished.connect(self.on_processing_finished)
         self.batch_thread.start()
@@ -1395,33 +1576,38 @@ class MainWindow(QMainWindow):
             logger.error(f"Failed to update PDF preview: {e}")
             self.pdf_preview_label.setText("Failed to update preview")
             
-    def update_pdf_image_preview(self, image_path):
-        """Update the image preview area with PDF layout visualization"""
+    def update_pdf_image_preview(self, file_path):
+        """Update the preview area with the first page of a PDF file."""
         try:
-            with Image.open(image_path) as img:
-                # Create a visualization of the PDF layout
-                preview_width = self.preview_label.width()
-                preview_height = self.preview_label.height()
-                
-                # Create a white background image
-                preview = Image.new('RGB', (preview_width, preview_height), 'white')
-                draw = ImageDraw.Draw(preview)
-                
-                # Draw page outline
-                margin = 20
-                draw.rectangle([margin, margin, preview_width-margin, preview_height-margin], 
-                             outline='gray', width=2)
-                
-                # Convert to QPixmap and display
-                preview_data = preview.tobytes("raw", "RGB")
-                qimg = QImage(preview_data, preview_width, preview_height, 
-                            3 * preview_width, QImage.Format.Format_RGB888)
-                pixmap = QPixmap.fromImage(qimg)
-                self.preview_label.setPixmap(pixmap)
-                
+            if not file_path or not os.path.exists(file_path):
+                return
+
+            # Check if the file is a PDF
+            if not file_path.lower().endswith('.pdf'):
+                return
+
+            # Get output directory from input field
+            output_dir = self.output_dir_input.text() or self.output_dir
+
+            # Convert the first page to a temporary image for preview
+            temp_dir = os.path.join(output_dir, '.temp')
+            os.makedirs(temp_dir, exist_ok=True)
+            temp_preview = os.path.join(temp_dir, 'preview.png')
+
+            # Use pdf2image to convert first page to PNG
+            try:
+                images = convert_from_path(file_path, first_page=1, last_page=1, dpi=72)
+                if images:
+                    images[0].save(temp_preview, 'PNG')
+                    self.update_preview(temp_preview)
+            except Exception as e:
+                self.logger.error(f"Failed to convert PDF to preview image: {str(e)}")
+                # Show a placeholder or message in the preview area
+                self.preview_label.setText("PDF Preview Not Available")
+            
         except Exception as e:
-            logger.error(f"Failed to update PDF image preview: {e}")
-            self.preview_label.clear()
+            self.logger.error(f"Failed to update PDF preview: {str(e)}")
+            self.preview_label.setText("Preview Not Available")
             
 class PDFPreviewWidget(QWidget):
     """Widget for PDF preview with navigation"""

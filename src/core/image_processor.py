@@ -15,7 +15,9 @@ class ImageProcessor:
     """
     
     def __init__(self):
-        logger.info("Initializing ImageProcessor")
+        """Initialize the image processor."""
+        self.logger = logger
+        self.logger.info("Initializing ImageProcessor")
         self.supported_formats = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.pdf'}
         # Letter size in inches converted to points (1 inch = 72 points)
         self.page_width = 8.5 * 72
@@ -192,64 +194,92 @@ class ImageProcessor:
             logger.error(f"Failed to estimate output size: {str(e)}")
             return 0.0
 
-    def enhance_quality(self, image_path: str, output_path: str) -> bool:
-        """Enhance image quality to 100%"""
-        try:
-            with Image.open(image_path) as img:
-                img.save(output_path, quality=100, optimize=True)
-            logger.info(f"Enhanced quality for: {image_path}")
-            return True
-        except Exception as e:
-            logger.error(f"Quality enhancement failed: {str(e)}")
-            return False
-            
-    def resize_image(self, image_path, output_path, target_dimension, constrain_width=True, quality=100):
-        """Resize an image while maintaining aspect ratio.
+    def enhance_quality(self, image_path: str, output_path: str, level='High') -> bool:
+        """Enhance image quality based on level.
         
         Args:
-            image_path (str): Path to the input image
-            output_path (str): Path to save the resized image
-            target_dimension (int): Target width or height in pixels
-            constrain_width (bool): If True, target_dimension is width, else height
-            quality (int): JPEG quality (1-100)
+            image_path: Input image path
+            output_path: Output path
+            level: Enhancement level ('Low', 'Medium', 'High')
             
         Returns:
             bool: True if successful, False otherwise
         """
         try:
-            # Ensure output directory exists
-            os.makedirs(os.path.dirname(output_path), exist_ok=True)
+            # Quality mapping for each level
+            quality_map = {
+                'High': 100,
+                'Medium': 92,
+                'Low': 85
+            }
+            quality = quality_map.get(level, 100)  # Default to High if invalid level
             
             with Image.open(image_path) as img:
-                # Calculate new dimensions
+                # Convert to RGB if necessary
+                if img.mode in ('RGBA', 'P'):
+                    img = img.convert('RGB')
+                    
+                # Save with specified quality and optimization
+                img.save(output_path, quality=quality, optimize=True)
+                
+            logger.info(f"Enhanced quality for: {image_path} with level: {level} (Quality: {quality}%)")
+            return True
+        except Exception as e:
+            logger.error(f"Quality enhancement failed: {str(e)}")
+            return False
+            
+    def resize_image(self, input_path, output_path, width=None, height=None, maintain_aspect=True):
+        """Resize an image to the specified dimensions.
+        
+        Args:
+            input_path (str): Path to input image
+            output_path (str): Path to save resized image
+            width (int, optional): Target width. Defaults to None.
+            height (int, optional): Target height. Defaults to None.
+            maintain_aspect (bool, optional): Whether to maintain aspect ratio. Defaults to True.
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        try:
+            with Image.open(input_path) as img:
+                # Convert to RGB if needed
+                if img.mode not in ('RGB', 'RGBA'):
+                    img = img.convert('RGB')
+                
+                # Get original dimensions
                 orig_width, orig_height = img.size
-                if constrain_width:
-                    new_width = target_dimension
-                    new_height = int(orig_height * (target_dimension / orig_width))
+                
+                # Calculate new dimensions
+                if width and height and not maintain_aspect:
+                    new_width = width
+                    new_height = height
+                elif width:
+                    # Scale height proportionally
+                    scale = width / orig_width
+                    new_width = width
+                    new_height = int(orig_height * scale)
+                elif height:
+                    # Scale width proportionally
+                    scale = height / orig_height
+                    new_width = int(orig_width * scale)
+                    new_height = height
                 else:
-                    new_height = target_dimension
-                    new_width = int(orig_width * (target_dimension / orig_height))
+                    # No dimensions specified, use original
+                    new_width = orig_width
+                    new_height = orig_height
                 
-                # Use LANCZOS resampling for high quality
-                resized_img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+                # Resize image
+                resized = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
                 
-                # Determine format and save options
-                format = img.format or 'JPEG'
-                save_options = {}
+                # Save resized image
+                resized.save(output_path, quality=95, optimize=True)
                 
-                if format == 'JPEG':
-                    save_options['quality'] = quality
-                    save_options['optimize'] = True
-                elif format == 'PNG':
-                    save_options['optimize'] = True
-                
-                # Save the image
-                resized_img.save(output_path, format=format, **save_options)
-                logger.info(f"Resized image saved: {output_path} ({new_width}x{new_height})")
+                self.logger.info(f"Resized image saved: {output_path} ({new_width}x{new_height})")
                 return True
                 
         except Exception as e:
-            logger.error(f"Failed to resize image: {str(e)}")
+            self.logger.error(f"Failed to resize image: {str(e)}")
             return False
             
     def reduce_file_size(self, input_path, output_path, target_size_mb, quality_priority=0.7):
@@ -553,86 +583,68 @@ class ImageProcessor:
             ]
             return layouts[:num_images]  # Return only needed layouts
             
-    def pdf_to_image(self, input_path: str, output_dir: str, 
-                        dpi: int = 300, 
-                        format: str = 'png',
-                        quality: int = 95,
-                        color_mode: str = 'RGB') -> bool:
-        """Convert PDF to images with enhanced options
+    def pdf_to_image(self, input_path: str, output_dir: str, format='png', dpi=300, quality=95, color_mode='RGB') -> bool:
+        """Convert PDF to images.
         
         Args:
-            input_path: Path to input PDF file
-            output_dir: Directory to save output images
-            dpi: Resolution in dots per inch (default 300)
-            format: Output format ('png', 'jpg', 'tiff')
-            quality: JPEG quality 1-100 (default 95)
-            color_mode: Color mode ('RGB' or 'RGBA' for PNG with transparency)
+            input_path: Path to input PDF
+            output_dir: Directory to save images
+            format: Output format (png, jpg, tiff)
+            dpi: DPI for output images
+            quality: JPEG quality (1-100)
+            color_mode: Color mode (RGB/RGBA)
             
         Returns:
             bool: True if successful, False otherwise
         """
         try:
-            # Validate input file
-            if not os.path.exists(input_path):
-                logger.error(f"PDF file not found: {input_path}")
-                return False
-                
-            # Create output directory if it doesn't exist
-            pdf_name = os.path.splitext(os.path.basename(input_path))[0]
-            output_dir = os.path.join(output_dir, f"{pdf_name}_pages")
+            # Ensure output directory exists
             os.makedirs(output_dir, exist_ok=True)
             
-            # Open the PDF file
+            # Get base name for output files
+            pdf_name = os.path.splitext(os.path.basename(input_path))[0]
+            
+            # Open PDF
             doc = fitz.open(input_path)
-            total_pages = len(doc)
+            total_pages = doc.page_count
             
-            # Calculate zoom factor based on DPI
-            zoom = dpi / 72  # 72 is the default PDF DPI
-            matrix = fitz.Matrix(zoom, zoom)
-            
-            # Process each page
             for page_num in range(total_pages):
-                try:
-                    page = doc[page_num]
-                    pix = page.get_pixmap(matrix=matrix, alpha=color_mode=='RGBA')
+                page = doc[page_num]
+                
+                # Calculate zoom factor based on DPI
+                zoom = dpi / 72.0  # PDF standard DPI is 72
+                matrix = fitz.Matrix(zoom, zoom)
+                
+                # Get page pixmap
+                if color_mode == 'RGBA':
+                    pix = page.get_pixmap(matrix=matrix, alpha=True)
+                else:
+                    pix = page.get_pixmap(matrix=matrix)
+                
+                # Generate output path directly in output directory
+                output_path = os.path.join(output_dir, f"{pdf_name}_page_{page_num + 1}.{format.lower()}")
+                
+                # Save image based on format
+                if format.lower() == 'png':
+                    pix.save(output_path)
+                else:
+                    # Convert to PIL Image for other formats
+                    img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+                    if color_mode == 'RGBA' and pix.alpha:
+                        alpha = Image.frombytes("L", [pix.width, pix.height], pix.alpha)
+                        img.putalpha(alpha)
                     
-                    # Convert to PIL Image for more format options
-                    img = Image.frombytes(
-                        color_mode,
-                        [pix.width, pix.height],
-                        pix.samples
-                    )
-                    
-                    # Determine output format and options
-                    save_options = {}
-                    if format.lower() == 'jpg':
-                        format = 'JPEG'
-                        save_options['quality'] = quality
-                        save_options['optimize'] = True
-                    elif format.lower() == 'png':
-                        format = 'PNG'
-                        save_options['optimize'] = True
-                    elif format.lower() == 'tiff':
-                        format = 'TIFF'
-                        save_options['compression'] = 'tiff_lzw'
-                    
-                    # Save the image
-                    output_path = os.path.join(output_dir, f'page_{page_num + 1}.{format.lower()}')
-                    img.save(output_path, format=format, **save_options)
-                    
-                    # Log progress
-                    logger.info(f"Converted page {page_num + 1}/{total_pages} to {output_path}")
-                    
-                except Exception as e:
-                    logger.error(f"Failed to convert page {page_num + 1}: {str(e)}")
-                    continue
-                    
+                    save_opts = {'quality': quality} if format.lower() == 'jpg' else {}
+                    img.save(output_path, format=format.upper(), **save_opts)
+                
+                logger.info(f"Converted page {page_num + 1}/{total_pages} to {output_path}")
+            
             doc.close()
             logger.info(f"Successfully converted PDF to {total_pages} images in {output_dir}")
             return True
             
         except Exception as e:
-            logger.error(f"PDF to Image conversion failed: {str(e)}")
+            logger.error(f"PDF to image conversion failed: {str(e)}")
             return False
 
     def process_with_verification(self, operation_func, input_path: str, 
