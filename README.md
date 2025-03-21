@@ -4,14 +4,40 @@ A Python-based Windows utility for batch image processing with a modern GUI inte
 
 ## Features
 
-- Image quality enhancement
-- Image resizing with aspect ratio maintenance
-- File size reduction
-- Image rotation
-- Watermark addition
-- PDF conversion (both ways)
-- Batch processing support
-- Drag and drop interface
+1. **Enhance Quality**
+   - Maximize image quality settings
+   - Optimize for best visual results
+
+2. **Resize Image**
+   - Maintain aspect ratio
+   - Choose between width or height constraint
+   - High-quality resizing algorithm
+
+3. **Reduce File Size**
+   - Target specific file size
+   - Smart compression
+   - Preserve visual quality
+
+4. **Image to PDF**
+   - Single or multiple images
+   - Customizable layout
+   - Quality settings
+
+5. **PDF to Image**
+   - Extract images from PDFs
+   - High-quality conversion
+   - Batch processing support
+
+6. **Upscale Image (Waifu2x)**
+   - AI-powered upscaling
+   - Noise reduction
+   - Best for anime/manga style images
+
+7. **Image Rotation**
+   - 90°, 180°, or 270° rotation options
+
+8. **Add Watermark**
+   - Add text watermark to images
 
 ## Installation
 
@@ -66,10 +92,10 @@ python src/main.py
 5. **Add Watermark**
    - Add text watermark to images
 
-6. **Convert to PDF**
+6. **Image to PDF**
    - Convert single or multiple images to PDF
 
-7. **Convert from PDF**
+7. **PDF to Image**
    - Extract images from PDF files
 
 ## Error Handling

@@ -13,6 +13,7 @@ from src.core.image_processor import ImageProcessor
 from src.core.optimized_processor import OptimizedProcessor
 from io import BytesIO
 import shutil
+import fitz
 
 class Action:
     def __init__(self, name, params=None):
@@ -70,7 +71,7 @@ class WorkerThread(QThread):
                 self.action_progress.emit(f"Performing: {action.name}")
                 
                 # Special handling for PDF conversion with combine option
-                if action.name == "Convert to PDF" and action.params.get('combine_files', False):
+                if action.name == "Image to PDF" and action.params.get('combine_files', False):
                     # For combined PDF, create a single output file
                     base_name = "combined_output.pdf"
                     if self.naming_option == 'custom':
@@ -104,7 +105,7 @@ class WorkerThread(QThread):
                     name, ext = os.path.splitext(filename)
                     
                     # For PDF conversion, ensure .pdf extension
-                    if action.name == "Convert to PDF":
+                    if action.name == "Image to PDF":
                         ext = ".pdf"
                     
                     if self.naming_option == 'custom':
@@ -139,22 +140,25 @@ class WorkerThread(QThread):
                             input_path, output_path,
                             **action.params
                         )
-                    elif action.name == "Convert to PDF":
-                        success = self.processor.convert_to_pdf(
-                            [input_path],
-                            output_path,
+                    elif action.name == "PDF to Image":
+                        # Create output directory for PDF pages
+                        pdf_output_dir = os.path.join(temp_dir if action != self.actions[-1] else self.output_dir, f"{name}_pages")
+                        os.makedirs(pdf_output_dir, exist_ok=True)
+                        
+                        # Convert PDF to images
+                        success = self.processor.convert_from_pdf(
+                            input_path,
+                            pdf_output_dir,
                             **action.params
                         )
-                    elif action.name == "Convert from PDF":
-                        pdf_output_dir = os.path.join(temp_dir, f"{name}_pages")
-                        os.makedirs(pdf_output_dir, exist_ok=True)
-                        success = self.processor.convert_from_pdf(input_path, pdf_output_dir)
+                        
                         if success:
                             # Add all generated images to the new files list
+                            format_ext = action.params.get('format', 'jpg').lower()
                             new_files.extend([
                                 os.path.join(pdf_output_dir, f)
                                 for f in os.listdir(pdf_output_dir)
-                                if f.lower().endswith(('.png', '.jpg', '.jpeg'))
+                                if f.lower().endswith(f'.{format_ext}')
                             ])
                             continue
                     elif action.name == "Upscale Image (Waifu2x)":
@@ -162,7 +166,13 @@ class WorkerThread(QThread):
                             input_path, output_path,
                             **action.params
                         )
-                        
+                    elif action.name == "Image to PDF":
+                        success = self.processor.convert_to_pdf(
+                            [input_path],
+                            output_path,
+                            **action.params
+                        )
+                    
                     if not success:
                         self.error.emit(f"Failed to process {filename}")
                         return
@@ -285,8 +295,8 @@ class MainWindow(QMainWindow):
             "Enhance Quality",
             "Resize Image",
             "Reduce File Size",
-            "Convert to PDF",
-            "Convert from PDF",
+            "Image to PDF",
+            "PDF to Image",
             "Upscale Image (Waifu2x)"
         ]
         
@@ -491,7 +501,7 @@ class MainWindow(QMainWindow):
                     params = {
                         'target_size_mb': self.target_size_spin.value()
                     }
-                elif action_name == "Convert to PDF":
+                elif action_name == "Image to PDF":
                     self.setup_pdf_parameters()
                     params = {
                         'combine_files': self.combine_pdf_check.isChecked(),
@@ -499,6 +509,14 @@ class MainWindow(QMainWindow):
                         'images_per_page': int(self.images_per_page_combo.currentText()),
                         'fit_mode': self.fit_mode_combo.currentText(),
                         'quality': self.pdf_quality_combo.currentText()
+                    }
+                elif action_name == "PDF to Image":
+                    self.setup_pdf_to_image_parameters()
+                    params = {
+                        'format': self.format_combo.currentText(),
+                        'dpi': self.dpi_spin.value(),
+                        'quality': self.pdf_quality_spin.value(),
+                        'color_mode': self.color_mode_combo.currentText()
                     }
                 
                 # Create and add the action to the queue
@@ -1083,7 +1101,7 @@ class MainWindow(QMainWindow):
         self.file_progress_label.setText(message) 
 
     def setup_pdf_parameters(self):
-        """Add parameter controls for the Convert to PDF action."""
+        """Add parameter controls for the Image to PDF action."""
         # Create container for PDF parameters
         pdf_widget = QWidget()
         layout = QVBoxLayout(pdf_widget)
@@ -1153,7 +1171,7 @@ class MainWindow(QMainWindow):
         """Update both action parameters and previews for PDF conversion"""
         # Update action parameters in queue
         for action in self.actions_queue:
-            if action.name == "Convert to PDF":
+            if action.name == "Image to PDF":
                 action.params.update({
                     'combine_files': self.combine_pdf_check.isChecked(),
                     'orientation': self.orientation_combo.currentText(),
@@ -1236,3 +1254,121 @@ class MainWindow(QMainWindow):
         except Exception as e:
             logger.error(f"Failed to update PDF image preview: {e}")
             self.preview_label.clear() 
+
+    def setup_pdf_to_image_parameters(self):
+        """Add parameter controls for PDF to Image conversion"""
+        pdf_widget = QWidget()
+        layout = QVBoxLayout(pdf_widget)
+        
+        # Format selection
+        format_layout = QHBoxLayout()
+        format_label = QLabel("Output Format:")
+        self.format_combo = QComboBox()
+        self.format_combo.addItems(['jpg', 'png', 'tiff'])
+        format_layout.addWidget(format_label)
+        format_layout.addWidget(self.format_combo)
+        layout.addLayout(format_layout)
+        
+        # DPI selection
+        dpi_layout = QHBoxLayout()
+        dpi_label = QLabel("DPI:")
+        self.dpi_spin = QSpinBox()
+        self.dpi_spin.setRange(72, 600)
+        self.dpi_spin.setValue(300)  # Default 300 DPI
+        self.dpi_spin.setSingleStep(72)
+        dpi_layout.addWidget(dpi_label)
+        dpi_layout.addWidget(self.dpi_spin)
+        layout.addLayout(dpi_layout)
+        
+        # Quality for JPEG
+        quality_layout = QHBoxLayout()
+        quality_label = QLabel("JPEG Quality:")
+        self.pdf_quality_spin = QSpinBox()
+        self.pdf_quality_spin.setRange(1, 100)
+        self.pdf_quality_spin.setValue(95)  # Default 95%
+        quality_layout.addWidget(quality_label)
+        quality_layout.addWidget(self.pdf_quality_spin)
+        layout.addLayout(quality_layout)
+        
+        # Color mode selection
+        color_layout = QHBoxLayout()
+        color_label = QLabel("Color Mode:")
+        self.color_mode_combo = QComboBox()
+        self.color_mode_combo.addItems(['RGB', 'RGBA'])
+        color_layout.addWidget(color_label)
+        color_layout.addWidget(self.color_mode_combo)
+        layout.addLayout(color_layout)
+        
+        # Preview label
+        self.pdf_preview_label = QLabel()
+        self.pdf_preview_label.setStyleSheet("color: gray;")
+        self.pdf_preview_label.setWordWrap(True)
+        layout.addWidget(self.pdf_preview_label)
+        
+        # Connect signals
+        self.format_combo.currentTextChanged.connect(self.update_pdf_to_image_parameters)
+        self.dpi_spin.valueChanged.connect(self.update_pdf_to_image_parameters)
+        self.pdf_quality_spin.valueChanged.connect(self.update_pdf_to_image_parameters)
+        self.color_mode_combo.currentTextChanged.connect(self.update_pdf_to_image_parameters)
+        
+        self.options_layout.addWidget(pdf_widget)
+        
+        # Initial preview update
+        self.update_pdf_to_image_parameters()
+        
+    def update_pdf_to_image_parameters(self):
+        """Update parameters for PDF to Image conversion"""
+        # Update action parameters in queue
+        for action in self.actions_queue:
+            if action.name == "PDF to Image":
+                action.params.update({
+                    'format': self.format_combo.currentText(),
+                    'dpi': self.dpi_spin.value(),
+                    'quality': self.pdf_quality_spin.value(),
+                    'color_mode': self.color_mode_combo.currentText()
+                })
+        
+        # Update queue display
+        self.update_queue_display()
+        
+        # Update preview text
+        if not hasattr(self, 'files') or not self.files:
+            self.pdf_preview_label.setText("Drop PDF files to see conversion details")
+            return
+            
+        try:
+            # Get first PDF file info
+            doc = fitz.open(self.files[0])
+            num_pages = len(doc)
+            
+            # Calculate estimated output size
+            dpi = self.dpi_spin.value()
+            format_text = self.format_combo.currentText().upper()
+            quality = self.pdf_quality_spin.value()
+            
+            preview_text = [
+                f"PDF Information:",
+                f"Number of pages: {num_pages}",
+                f"Output format: {format_text}",
+                f"Resolution: {dpi} DPI",
+                f"Color mode: {self.color_mode_combo.currentText()}"
+            ]
+            
+            if format_text == 'JPG':
+                preview_text.append(f"JPEG quality: {quality}%")
+            
+            # Add note for multiple files
+            if len(self.files) > 1:
+                preview_text.extend([
+                    "",
+                    f"Note: These settings will be applied to all {len(self.files)} PDF files.",
+                    "Each page will be saved as a separate image."
+                ])
+            
+            self.pdf_preview_label.setText("\n".join(preview_text))
+            doc.close()
+            
+        except Exception as e:
+            logger.error(f"Failed to update PDF preview: {e}")
+            self.pdf_preview_label.setText("Failed to read PDF information")
+            

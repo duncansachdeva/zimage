@@ -5,7 +5,7 @@ from loguru import logger
 from typing import Optional
 from fpdf import FPDF
 import img2pdf
-from pdf2image import convert_from_path
+import fitz  # PyMuPDF
 from io import BytesIO
 
 class ImageProcessor:
@@ -434,14 +434,79 @@ class ImageProcessor:
             ]
             return layouts[:num_images]  # Return only needed layouts
             
-    def convert_from_pdf(self, pdf_path: str, output_dir: str) -> bool:
-        """Convert PDF to images"""
+    def convert_from_pdf(self, input_path: str, output_dir: str, 
+                        dpi: int = 300, 
+                        format: str = 'jpg',
+                        quality: int = 95,
+                        color_mode: str = 'RGB') -> bool:
+        """Convert PDF to images with enhanced options
+        
+        Args:
+            input_path: Path to input PDF file
+            output_dir: Directory to save output images
+            dpi: Resolution in dots per inch (default 300)
+            format: Output format ('jpg', 'png', 'tiff')
+            quality: JPEG quality 1-100 (default 95)
+            color_mode: Color mode ('RGB' or 'RGBA' for PNG with transparency)
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
         try:
-            images = convert_from_path(pdf_path)
-            for i, image in enumerate(images):
-                image.save(os.path.join(output_dir, f'page_{i+1}.png'), 'PNG')
-            logger.info(f"Converted PDF to images: {pdf_path}")
+            # Validate input file
+            if not os.path.exists(input_path):
+                logger.error(f"PDF file not found: {input_path}")
+                return False
+                
+            # Create output directory if it doesn't exist
+            os.makedirs(output_dir, exist_ok=True)
+            
+            # Open the PDF file
+            doc = fitz.open(input_path)
+            
+            # Calculate zoom factor based on DPI
+            zoom = dpi / 72  # 72 is the default PDF DPI
+            matrix = fitz.Matrix(zoom, zoom)
+            
+            # Process each page
+            for page_num in range(len(doc)):
+                try:
+                    page = doc[page_num]
+                    pix = page.get_pixmap(matrix=matrix, alpha=color_mode=='RGBA')
+                    
+                    # Convert to PIL Image for more format options
+                    img = Image.frombytes(
+                        color_mode,
+                        [pix.width, pix.height],
+                        pix.samples
+                    )
+                    
+                    # Determine output format and options
+                    save_options = {}
+                    if format.lower() == 'jpg':
+                        format = 'JPEG'
+                        save_options['quality'] = quality
+                        save_options['optimize'] = True
+                    elif format.lower() == 'png':
+                        format = 'PNG'
+                        save_options['optimize'] = True
+                    elif format.lower() == 'tiff':
+                        format = 'TIFF'
+                        save_options['compression'] = 'tiff_lzw'
+                    
+                    # Save the image
+                    output_path = os.path.join(output_dir, f'page_{page_num + 1}.{format.lower()}')
+                    img.save(output_path, format=format, **save_options)
+                    logger.info(f"Saved page {page_num + 1} as {output_path}")
+                    
+                except Exception as e:
+                    logger.error(f"Failed to convert page {page_num + 1}: {str(e)}")
+                    continue
+            
+            doc.close()
+            logger.info(f"Successfully converted PDF to {len(doc)} images")
             return True
+            
         except Exception as e:
             logger.error(f"PDF to image conversion failed: {str(e)}")
             return False
