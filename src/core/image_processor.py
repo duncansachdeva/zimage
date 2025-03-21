@@ -7,6 +7,7 @@ from fpdf import FPDF
 import img2pdf
 import fitz  # PyMuPDF
 from io import BytesIO
+from PyQt6.QtGui import QImage
 
 class ImageProcessor:
     """
@@ -15,7 +16,7 @@ class ImageProcessor:
     
     def __init__(self):
         logger.info("Initializing ImageProcessor")
-        self.supported_formats = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff'}
+        self.supported_formats = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.pdf'}
         # Letter size in inches converted to points (1 inch = 72 points)
         self.page_width = 8.5 * 72
         self.page_height = 11 * 72
@@ -70,26 +71,127 @@ class ImageProcessor:
             logger.error(f"Output path generation failed: {str(e)}")
             return None
 
-    def validate_image(self, image_path: str) -> bool:
-        """Validate if file is an image and exists"""
+    def validate_file(self, file_path: str) -> bool:
+        """Validate if file is an image/PDF and exists"""
         try:
-            if not os.path.exists(image_path):
-                logger.error(f"File not found: {image_path}")
+            if not os.path.exists(file_path):
+                logger.error(f"File not found: {file_path}")
                 return False
             
-            ext = os.path.splitext(image_path)[1].lower()
+            ext = os.path.splitext(file_path)[1].lower()
             if ext not in self.supported_formats:
                 logger.error(f"Unsupported format: {ext}")
                 return False
                 
-            # Try opening the image to verify it's valid
-            with Image.open(image_path) as img:
+            # PDF-specific validation
+            if ext == '.pdf':
+                try:
+                    doc = fitz.open(file_path)
+                    is_valid = doc.page_count > 0
+                    doc.close()
+                    if not is_valid:
+                        logger.error(f"Invalid PDF file: {file_path}")
+                        return False
+                    return True
+                except Exception as e:
+                    logger.error(f"PDF validation failed: {str(e)}")
+                    return False
+            
+            # Image validation for non-PDF files
+            with Image.open(file_path) as img:
                 img.verify()
             return True
         except Exception as e:
-            logger.error(f"Image validation failed: {str(e)}")
+            logger.error(f"File validation failed: {str(e)}")
             return False
+
+    def get_pdf_info(self, pdf_path: str) -> dict:
+        """Get PDF file information"""
+        try:
+            doc = fitz.open(pdf_path)
+            file_size = os.path.getsize(pdf_path) / (1024 * 1024)  # Convert to MB
             
+            info = {
+                'page_count': len(doc),
+                'file_size': f"{file_size:.2f} MB",
+                'dimensions': [],
+                'current_page': 1
+            }
+            
+            # Get dimensions of each page
+            for page in doc:
+                rect = page.rect
+                info['dimensions'].append({
+                    'width': int(rect.width),
+                    'height': int(rect.height)
+                })
+            
+            doc.close()
+            return info
+        except Exception as e:
+            logger.error(f"Failed to get PDF info: {str(e)}")
+            return None
+
+    def get_pdf_page_preview(self, pdf_path: str, page_number: int, zoom: float = 1.0) -> tuple:
+        """Get preview image for a specific PDF page
+        
+        Returns:
+            tuple: (QImage, page_dimensions) or (None, None) on failure
+        """
+        try:
+            doc = fitz.open(pdf_path)
+            if 0 <= page_number < len(doc):
+                page = doc[page_number]
+                matrix = fitz.Matrix(zoom, zoom)
+                pix = page.get_pixmap(matrix=matrix)
+                
+                # Convert to QImage
+                img_data = pix.samples
+                qimg = QImage(img_data, pix.width, pix.height, pix.stride, QImage.Format.Format_RGB888)
+                
+                # Get page dimensions
+                dimensions = {
+                    'width': int(page.rect.width),
+                    'height': int(page.rect.height)
+                }
+                
+                doc.close()
+                return qimg, dimensions
+                
+            doc.close()
+            return None, None
+        except Exception as e:
+            logger.error(f"Failed to get PDF page preview: {str(e)}")
+            return None, None
+
+    def estimate_output_size(self, pdf_dimensions: dict, dpi: int, format: str, quality: int = 95) -> float:
+        """Estimate output file size based on parameters"""
+        try:
+            # Calculate pixel dimensions
+            width_px = int(pdf_dimensions['width'] * dpi / 72)
+            height_px = int(pdf_dimensions['height'] * dpi / 72)
+            
+            # Base size (uncompressed RGB)
+            base_size = width_px * height_px * 3  # 3 bytes per pixel for RGB
+            
+            # Apply format-specific compression estimates
+            if format.lower() == 'png':
+                # PNG typically achieves 5:1 to 8:1 compression for natural images
+                estimated_size = base_size / 6  # Using average compression ratio
+            elif format.lower() == 'jpg':
+                # JPEG compression based on quality
+                compression_ratio = 20 + (80 * quality / 100)  # Higher quality = less compression
+                estimated_size = base_size * (quality / compression_ratio)
+            else:  # TIFF
+                # TIFF with LZW typically achieves 2:1 to 3:1 compression
+                estimated_size = base_size / 2.5
+            
+            # Convert to MB
+            return estimated_size / (1024 * 1024)
+        except Exception as e:
+            logger.error(f"Failed to estimate output size: {str(e)}")
+            return 0.0
+
     def enhance_quality(self, image_path: str, output_path: str) -> bool:
         """Enhance image quality to 100%"""
         try:
@@ -150,8 +252,18 @@ class ImageProcessor:
             logger.error(f"Failed to resize image: {str(e)}")
             return False
             
-    def reduce_file_size(self, input_path, output_path, target_size_mb):
-        """Reduce file size to target size in MB while maintaining action chain compatibility"""
+    def reduce_file_size(self, input_path, output_path, target_size_mb, quality_priority=0.7):
+        """Reduce file size to target size in MB while maintaining quality based on priority.
+        
+        Args:
+            input_path (str): Path to input image
+            output_path (str): Path to save reduced image
+            target_size_mb (float): Target file size in megabytes
+            quality_priority (float): Priority for quality vs size (0.0-1.0, higher means prefer quality)
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
         try:
             # Get original file size and extension
             original_size = os.path.getsize(input_path) / (1024 * 1024)  # Convert to MB
@@ -169,8 +281,10 @@ class ImageProcessor:
                     img.save(output_path, format='JPEG', quality=95, optimize=True)
                     return True
                 
-                # Start with estimated quality based on size ratio
-                quality = min(95, max(5, int((target_size_mb / original_size) * 100)))
+                # Calculate initial quality based on size ratio and quality priority
+                base_quality = (target_size_mb / original_size) * 100
+                quality = min(95, max(5, int(base_quality + (95 - base_quality) * quality_priority)))
+                
                 max_attempts = 15  # Increased attempts for better accuracy
                 attempt = 0
                 best_result = {'quality': quality, 'size': float('inf'), 'diff': float('inf')}
@@ -185,7 +299,9 @@ class ImageProcessor:
                     size_diff = abs(result_size - target_size_mb)
                     
                     # Update best result if this is closer to target and not exceeding it by much
-                    if size_diff < best_result['diff'] and (result_size <= target_size_mb * 1.05):
+                    # Consider quality priority in the decision
+                    quality_weight = 1 + quality_priority  # Higher priority means we accept slightly larger files
+                    if size_diff < best_result['diff'] and (result_size <= target_size_mb * quality_weight):
                         best_result = {
                             'quality': quality,
                             'size': result_size,
@@ -193,8 +309,9 @@ class ImageProcessor:
                             'data': temp_buffer.getvalue()  # Store the actual data
                         }
                     
-                    # If we're within 2% of target size, we're done
-                    if abs(result_size - target_size_mb) / target_size_mb <= 0.02:
+                    # If we're within acceptable range based on quality priority, we're done
+                    acceptable_margin = 0.02 + (quality_priority * 0.03)  # Higher priority allows more margin
+                    if abs(result_size - target_size_mb) / target_size_mb <= acceptable_margin:
                         with open(output_path, 'wb') as f:
                             f.write(temp_buffer.getvalue())
                         logger.info(f"Reduced file size: {output_path} "
@@ -204,14 +321,16 @@ class ImageProcessor:
                                   f"Quality: {quality}%)")
                         return True
                     
-                    # Adjust quality based on how far we are from target
+                    # Adjust quality based on how far we are from target and quality priority
                     if result_size > target_size_mb:
-                        # If we're too big, reduce quality
-                        quality_change = max(1, int(quality * (1 - (result_size - target_size_mb) / target_size_mb * 0.5)))
+                        # If we're too big, reduce quality (less aggressive with high priority)
+                        reduction_factor = 1 - (quality_priority * 0.5)  # Higher priority means smaller reductions
+                        quality_change = max(1, int(quality * (result_size - target_size_mb) / target_size_mb * reduction_factor))
                         quality = max(5, quality - quality_change)
                     else:
-                        # If we're too small, increase quality more aggressively
-                        quality_change = max(1, int(quality * ((target_size_mb - result_size) / target_size_mb * 0.5)))
+                        # If we're too small, increase quality (more aggressive with high priority)
+                        increase_factor = 1 + (quality_priority * 0.5)  # Higher priority means larger increases
+                        quality_change = max(1, int(quality * (target_size_mb - result_size) / target_size_mb * increase_factor))
                         quality = min(95, quality + quality_change)
                     
                     attempt += 1
@@ -263,7 +382,7 @@ class ImageProcessor:
             # Validate images first
             valid_images = []
             for img_path in image_paths:
-                if self.validate_image(str(img_path)):
+                if self.validate_file(str(img_path)):
                     valid_images.append(str(img_path))
             
             if not valid_images:
@@ -434,9 +553,9 @@ class ImageProcessor:
             ]
             return layouts[:num_images]  # Return only needed layouts
             
-    def convert_from_pdf(self, input_path: str, output_dir: str, 
+    def pdf_to_image(self, input_path: str, output_dir: str, 
                         dpi: int = 300, 
-                        format: str = 'jpg',
+                        format: str = 'png',
                         quality: int = 95,
                         color_mode: str = 'RGB') -> bool:
         """Convert PDF to images with enhanced options
@@ -445,7 +564,7 @@ class ImageProcessor:
             input_path: Path to input PDF file
             output_dir: Directory to save output images
             dpi: Resolution in dots per inch (default 300)
-            format: Output format ('jpg', 'png', 'tiff')
+            format: Output format ('png', 'jpg', 'tiff')
             quality: JPEG quality 1-100 (default 95)
             color_mode: Color mode ('RGB' or 'RGBA' for PNG with transparency)
             
@@ -459,17 +578,20 @@ class ImageProcessor:
                 return False
                 
             # Create output directory if it doesn't exist
+            pdf_name = os.path.splitext(os.path.basename(input_path))[0]
+            output_dir = os.path.join(output_dir, f"{pdf_name}_pages")
             os.makedirs(output_dir, exist_ok=True)
             
             # Open the PDF file
             doc = fitz.open(input_path)
+            total_pages = len(doc)
             
             # Calculate zoom factor based on DPI
             zoom = dpi / 72  # 72 is the default PDF DPI
             matrix = fitz.Matrix(zoom, zoom)
             
             # Process each page
-            for page_num in range(len(doc)):
+            for page_num in range(total_pages):
                 try:
                     page = doc[page_num]
                     pix = page.get_pixmap(matrix=matrix, alpha=color_mode=='RGBA')
@@ -497,18 +619,20 @@ class ImageProcessor:
                     # Save the image
                     output_path = os.path.join(output_dir, f'page_{page_num + 1}.{format.lower()}')
                     img.save(output_path, format=format, **save_options)
-                    logger.info(f"Saved page {page_num + 1} as {output_path}")
+                    
+                    # Log progress
+                    logger.info(f"Converted page {page_num + 1}/{total_pages} to {output_path}")
                     
                 except Exception as e:
                     logger.error(f"Failed to convert page {page_num + 1}: {str(e)}")
                     continue
-            
+                    
             doc.close()
-            logger.info(f"Successfully converted PDF to {len(doc)} images")
+            logger.info(f"Successfully converted PDF to {total_pages} images in {output_dir}")
             return True
             
         except Exception as e:
-            logger.error(f"PDF to image conversion failed: {str(e)}")
+            logger.error(f"PDF to Image conversion failed: {str(e)}")
             return False
 
     def process_with_verification(self, operation_func, input_path: str, 
