@@ -8,10 +8,11 @@ from PyQt6.QtGui import QDragEnterEvent, QDropEvent, QPixmap, QImage
 import os
 import json
 from loguru import logger
-from PIL import Image
+from PIL import Image, ImageDraw
 from src.core.image_processor import ImageProcessor
 from src.core.optimized_processor import OptimizedProcessor
 from io import BytesIO
+import shutil
 
 class Action:
     def __init__(self, name, params=None):
@@ -42,98 +43,154 @@ class WorkerThread(QThread):
     finished = pyqtSignal()
     error = pyqtSignal(str)
     
-    def __init__(self, processor, actions, files, output_dir, naming_option='same', 
-                 custom_suffix=''):
+    def __init__(self, processor, actions, files, output_dir, naming_option, custom_suffix):
         super().__init__()
         self.processor = processor
-        self.actions = actions  # List of Action objects
+        self.actions = actions
         self.files = files
         self.output_dir = output_dir
         self.naming_option = naming_option
         self.custom_suffix = custom_suffix
         self._is_cancelled = False
         
-    def cancel(self):
-        """Cancel the operation"""
-        self._is_cancelled = True
-        
     def run(self):
+        """Process files with selected actions"""
         try:
-            total_files = len(self.files)
-            for file_idx, file in enumerate(self.files, 1):
-                if self._is_cancelled:
-                    break
+            total_steps = len(self.files) * len(self.actions)
+            current_step = 0
+            
+            # Create temporary directory for intermediate files
+            temp_dir = os.path.join(self.output_dir, '.temp')
+            os.makedirs(temp_dir, exist_ok=True)
+            
+            # Track current files being processed
+            current_files = self.files.copy()
+            
+            for action in self.actions:
+                self.action_progress.emit(f"Performing: {action.name}")
                 
-                # Ensure output directory exists
-                os.makedirs(self.output_dir, exist_ok=True)
-                
-                # Generate final output path
-                output_path = self.processor.generate_output_path(
-                    file, self.output_dir,
-                    self.naming_option,
-                    self.custom_suffix,
-                    file_idx if self.naming_option == 'sequential' else None
-                )
-                
-                if not output_path:
-                    self.error.emit(f"Failed to generate output path for {file}")
-                    continue
-                
-                # Process file through action chain
-                current_file = file
-                temp_file = None
-                
-                # Get the original file extension
-                original_ext = os.path.splitext(file)[1].lower()
-                
-                for action_idx, action in enumerate(self.actions, 1):
-                    if self._is_cancelled:
-                        break
-                        
-                    self.action_progress.emit(f"Action {action_idx}/{len(self.actions)}: {action}")
+                # Special handling for PDF conversion with combine option
+                if action.name == "Convert to PDF" and action.params.get('combine_files', False):
+                    # For combined PDF, create a single output file
+                    base_name = "combined_output.pdf"
+                    if self.naming_option == 'custom':
+                        base_name = f"combined_{self.custom_suffix}.pdf"
+                    elif self.naming_option == 'sequential':
+                        base_name = f"combined_1.pdf"
                     
-                    # For intermediate steps, use a temp file with proper extension
-                    if action_idx < len(self.actions):
-                        temp_file = f"{output_path}.temp{action_idx}{original_ext}"
-                    else:
-                        temp_file = output_path
-                    
-                    # Convert action name to method name
-                    method_name = action.name.lower().replace(" ", "_")
-                    
-                    # Ensure the output directory for temp files exists
-                    os.makedirs(os.path.dirname(temp_file), exist_ok=True)
-                    
-                    success = self.processor.process_with_verification(
-                        getattr(self.processor, method_name),
-                        current_file, temp_file,
+                    output_path = os.path.join(self.output_dir, base_name)
+                    success = self.processor.convert_to_pdf(
+                        current_files,
+                        output_path,
                         **action.params
                     )
-                    
                     if not success:
-                        self.error.emit(f"Failed to process {file} with action: {action}")
-                        break
+                        self.error.emit(f"Failed to create combined PDF")
+                        return
+                    # Update current_files to point to the new PDF
+                    current_files = [output_path]
+                    continue
+                
+                # Process each file through the current action
+                new_files = []
+                for i, input_path in enumerate(current_files):
+                    if self._is_cancelled:
+                        return
+                        
+                    self.file_progress.emit(f"Processing file {i+1} of {len(current_files)}")
                     
-                    # Update current file for next action
-                    if action_idx < len(self.actions):
-                        current_file = temp_file
+                    # Generate output path
+                    filename = os.path.basename(input_path)
+                    name, ext = os.path.splitext(filename)
+                    
+                    # For PDF conversion, ensure .pdf extension
+                    if action.name == "Convert to PDF":
+                        ext = ".pdf"
+                    
+                    if self.naming_option == 'custom':
+                        new_name = f"{name}_{self.custom_suffix}{ext}"
+                    elif self.naming_option == 'sequential':
+                        new_name = f"{name}_{i+1}{ext}"
+                    else:
+                        new_name = filename
+                        
+                    # For final action, save directly to output directory
+                    if action == self.actions[-1]:
+                        output_path = os.path.join(self.output_dir, new_name)
+                    else:
+                        output_path = os.path.join(temp_dir, new_name)
+                    
+                    # Process the file
+                    success = False
+                    if action.name == "Enhance Quality":
+                        success = self.processor.process_with_verification(
+                            self.processor.enhance_quality,
+                            input_path, output_path
+                        )
+                    elif action.name == "Resize Image":
+                        success = self.processor.process_with_verification(
+                            self.processor.resize_image,
+                            input_path, output_path,
+                            **action.params
+                        )
+                    elif action.name == "Reduce File Size":
+                        success = self.processor.process_with_verification(
+                            self.processor.reduce_file_size,
+                            input_path, output_path,
+                            **action.params
+                        )
+                    elif action.name == "Convert to PDF":
+                        success = self.processor.convert_to_pdf(
+                            [input_path],
+                            output_path,
+                            **action.params
+                        )
+                    elif action.name == "Convert from PDF":
+                        pdf_output_dir = os.path.join(temp_dir, f"{name}_pages")
+                        os.makedirs(pdf_output_dir, exist_ok=True)
+                        success = self.processor.convert_from_pdf(input_path, pdf_output_dir)
+                        if success:
+                            # Add all generated images to the new files list
+                            new_files.extend([
+                                os.path.join(pdf_output_dir, f)
+                                for f in os.listdir(pdf_output_dir)
+                                if f.lower().endswith(('.png', '.jpg', '.jpeg'))
+                            ])
+                            continue
+                    elif action.name == "Upscale Image (Waifu2x)":
+                        success = self.processor.upscale_image_waifu2x(
+                            input_path, output_path,
+                            **action.params
+                        )
+                        
+                    if not success:
+                        self.error.emit(f"Failed to process {filename}")
+                        return
+                        
+                    new_files.append(output_path)
+                    current_step += 1
+                    self.progress.emit(int(current_step * 100 / total_steps))
                 
-                # Clean up temporary files
-                for i in range(1, len(self.actions)):
-                    temp = f"{output_path}.temp{i}{original_ext}"
-                    if os.path.exists(temp):
-                        try:
-                            os.remove(temp)
-                        except:
-                            pass
-                
-                self.file_progress.emit(f"Processing: {os.path.basename(file)}")
-                self.progress.emit(int(file_idx / total_files * 100))
-                
+                # Update current files for next action
+                current_files = new_files
+            
+            # Clean up temp directory if it exists and is empty
+            try:
+                if os.path.exists(temp_dir):
+                    shutil.rmtree(temp_dir)
+            except Exception as e:
+                logger.warning(f"Failed to clean up temp directory: {str(e)}")
+            
+            self.progress.emit(100)
             self.finished.emit()
+            
         except Exception as e:
-            logger.error(f"Worker thread error: {str(e)}")
             self.error.emit(str(e))
+            logger.error(f"Processing error: {str(e)}")
+            
+    def cancel(self):
+        """Cancel processing"""
+        self._is_cancelled = True
 
 class BatchProcessingThread(QThread):
     progress_update = pyqtSignal(int, int)  # emits (completed, total)
@@ -433,6 +490,15 @@ class MainWindow(QMainWindow):
                     self.setup_reduce_size_parameters()
                     params = {
                         'target_size_mb': self.target_size_spin.value()
+                    }
+                elif action_name == "Convert to PDF":
+                    self.setup_pdf_parameters()
+                    params = {
+                        'combine_files': self.combine_pdf_check.isChecked(),
+                        'orientation': self.orientation_combo.currentText(),
+                        'images_per_page': int(self.images_per_page_combo.currentText()),
+                        'fit_mode': self.fit_mode_combo.currentText(),
+                        'quality': self.pdf_quality_combo.currentText()
                     }
                 
                 # Create and add the action to the queue
@@ -1015,3 +1081,158 @@ class MainWindow(QMainWindow):
     def update_status_info(self, message):
         """Update status information"""
         self.file_progress_label.setText(message) 
+
+    def setup_pdf_parameters(self):
+        """Add parameter controls for the Convert to PDF action."""
+        # Create container for PDF parameters
+        pdf_widget = QWidget()
+        layout = QVBoxLayout(pdf_widget)
+        
+        # Save Mode
+        save_mode_layout = QHBoxLayout()
+        self.combine_pdf_check = QCheckBox("Combine into single PDF")
+        self.combine_pdf_check.setChecked(False)
+        save_mode_layout.addWidget(self.combine_pdf_check)
+        layout.addLayout(save_mode_layout)
+        
+        # Page Orientation
+        orientation_layout = QHBoxLayout()
+        orientation_label = QLabel("Page Orientation:")
+        self.orientation_combo = QComboBox()
+        self.orientation_combo.addItems(["Auto", "Portrait", "Landscape"])
+        orientation_layout.addWidget(orientation_label)
+        orientation_layout.addWidget(self.orientation_combo)
+        layout.addLayout(orientation_layout)
+        
+        # Images per Page
+        images_layout = QHBoxLayout()
+        images_label = QLabel("Images per Page:")
+        self.images_per_page_combo = QComboBox()
+        self.images_per_page_combo.addItems(["1", "2", "4", "6"])
+        images_layout.addWidget(images_label)
+        images_layout.addWidget(self.images_per_page_combo)
+        layout.addLayout(images_layout)
+        
+        # Fit Mode
+        fit_layout = QHBoxLayout()
+        fit_label = QLabel("Fit Mode:")
+        self.fit_mode_combo = QComboBox()
+        self.fit_mode_combo.addItems(["Fit to page", "Stretch to fill", "Actual size"])
+        fit_layout.addWidget(fit_label)
+        fit_layout.addWidget(self.fit_mode_combo)
+        layout.addLayout(fit_layout)
+        
+        # PDF Quality
+        quality_layout = QHBoxLayout()
+        quality_label = QLabel("PDF Quality:")
+        self.pdf_quality_combo = QComboBox()
+        self.pdf_quality_combo.addItems(["High", "Medium", "Low"])
+        quality_layout.addWidget(quality_label)
+        quality_layout.addWidget(self.pdf_quality_combo)
+        layout.addLayout(quality_layout)
+        
+        # Preview label
+        self.pdf_preview_label = QLabel()
+        self.pdf_preview_label.setStyleSheet("color: gray;")
+        self.pdf_preview_label.setWordWrap(True)
+        layout.addWidget(self.pdf_preview_label)
+        
+        # Connect signals to update preview
+        self.combine_pdf_check.stateChanged.connect(self.update_pdf_parameters)
+        self.orientation_combo.currentTextChanged.connect(self.update_pdf_parameters)
+        self.images_per_page_combo.currentTextChanged.connect(self.update_pdf_parameters)
+        self.fit_mode_combo.currentTextChanged.connect(self.update_pdf_parameters)
+        self.pdf_quality_combo.currentTextChanged.connect(self.update_pdf_parameters)
+        
+        self.options_layout.addWidget(pdf_widget)
+        
+        # Initial preview update
+        self.update_pdf_parameters()
+
+    def update_pdf_parameters(self):
+        """Update both action parameters and previews for PDF conversion"""
+        # Update action parameters in queue
+        for action in self.actions_queue:
+            if action.name == "Convert to PDF":
+                action.params.update({
+                    'combine_files': self.combine_pdf_check.isChecked(),
+                    'orientation': self.orientation_combo.currentText(),
+                    'images_per_page': int(self.images_per_page_combo.currentText()),
+                    'fit_mode': self.fit_mode_combo.currentText(),
+                    'quality': self.pdf_quality_combo.currentText()
+                })
+        
+        # Update queue display
+        self.update_queue_display()
+        
+        # Update preview
+        self.update_pdf_preview()
+
+    def update_pdf_preview(self):
+        """Update the PDF preview with layout information"""
+        if not hasattr(self, 'files') or not self.files:
+            self.pdf_preview_label.setText("Drop images to see PDF layout preview")
+            return
+            
+        try:
+            # Get number of images
+            total_images = len(self.files)
+            images_per_page = int(self.images_per_page_combo.currentText())
+            orientation = self.orientation_combo.currentText()
+            fit_mode = self.fit_mode_combo.currentText()
+            
+            # Calculate pages needed
+            pages = (total_images + images_per_page - 1) // images_per_page
+            
+            # Create preview text
+            preview_text = [
+                f"PDF Layout Preview:",
+                f"Total Images: {total_images}",
+                f"Pages: {pages}",
+                f"Layout: {images_per_page} image(s) per page",
+                f"Orientation: {orientation}",
+                f"Fit Mode: {fit_mode}"
+            ]
+            
+            if self.combine_pdf_check.isChecked():
+                preview_text.append("Output: Single combined PDF file")
+            else:
+                preview_text.append("Output: Individual PDF files")
+            
+            self.pdf_preview_label.setText("\n".join(preview_text))
+            
+            # Update image preview if possible
+            if total_images > 0:
+                self.update_pdf_image_preview(self.files[0])
+                
+        except Exception as e:
+            logger.error(f"Failed to update PDF preview: {e}")
+            self.pdf_preview_label.setText("Failed to update preview")
+
+    def update_pdf_image_preview(self, image_path):
+        """Update the image preview area with PDF layout visualization"""
+        try:
+            with Image.open(image_path) as img:
+                # Create a visualization of the PDF layout
+                preview_width = self.preview_label.width()
+                preview_height = self.preview_label.height()
+                
+                # Create a white background image
+                preview = Image.new('RGB', (preview_width, preview_height), 'white')
+                draw = ImageDraw.Draw(preview)
+                
+                # Draw page outline
+                margin = 20
+                draw.rectangle([margin, margin, preview_width-margin, preview_height-margin], 
+                             outline='gray', width=2)
+                
+                # Convert to QPixmap and display
+                preview_data = preview.tobytes("raw", "RGB")
+                qimg = QImage(preview_data, preview_width, preview_height, 
+                            3 * preview_width, QImage.Format.Format_RGB888)
+                pixmap = QPixmap.fromImage(qimg)
+                self.preview_label.setPixmap(pixmap)
+                
+        except Exception as e:
+            logger.error(f"Failed to update PDF image preview: {e}")
+            self.preview_label.clear() 

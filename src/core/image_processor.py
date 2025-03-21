@@ -3,6 +3,7 @@ import os
 import shutil
 from loguru import logger
 from typing import Optional
+from fpdf import FPDF
 import img2pdf
 from pdf2image import convert_from_path
 from io import BytesIO
@@ -15,6 +16,9 @@ class ImageProcessor:
     def __init__(self):
         logger.info("Initializing ImageProcessor")
         self.supported_formats = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff'}
+        # Letter size in inches converted to points (1 inch = 72 points)
+        self.page_width = 8.5 * 72
+        self.page_height = 11 * 72
         
     def verify_disk_space(self, input_path: str, output_path: str, factor: float = 1.5) -> bool:
         """Verify if there's enough disk space for the operation"""
@@ -234,17 +238,201 @@ class ImageProcessor:
             logger.error(f"Failed to reduce file size: {e}")
             return False
             
-    def convert_to_pdf(self, image_paths: list, output_path: str) -> bool:
-        """Convert image(s) to PDF"""
+    def convert_to_pdf(self, image_paths: list, output_path: str, combine_files=False,
+                      orientation='Auto', images_per_page=1, fit_mode='Fit to page',
+                      quality='High') -> bool:
+        """Convert image(s) to PDF with enhanced options.
+        
+        Args:
+            image_paths: List of image paths to convert
+            output_path: Path to save the PDF(s)
+            combine_files: Whether to combine all images into one PDF
+            orientation: Page orientation ('Auto', 'Portrait', 'Landscape')
+            images_per_page: Number of images per page (1, 2, 4, or 6)
+            fit_mode: How to fit images ('Fit to page', 'Stretch to fill', 'Actual size')
+            quality: PDF quality ('High', 'Medium', 'Low')
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
         try:
-            with open(output_path, "wb") as f:
-                f.write(img2pdf.convert([image_path for image_path in image_paths
-                                       if self.validate_image(image_path)]))
-            logger.info(f"Converted images to PDF: {output_path}")
-            return True
+            # Ensure image_paths is a list of strings
+            if isinstance(image_paths, str):
+                image_paths = [image_paths]
+            
+            # Validate images first
+            valid_images = []
+            for img_path in image_paths:
+                if self.validate_image(str(img_path)):
+                    valid_images.append(str(img_path))
+            
+            if not valid_images:
+                logger.error("No valid images to convert")
+                return False
+            
+            # Ensure output directory exists
+            os.makedirs(os.path.dirname(output_path), exist_ok=True)
+                
+            if combine_files:
+                return self._create_combined_pdf(valid_images, output_path, orientation,
+                                              images_per_page, fit_mode, quality)
+            else:
+                return self._create_individual_pdfs(valid_images, output_path, orientation,
+                                                 images_per_page, fit_mode, quality)
+                
         except Exception as e:
             logger.error(f"PDF conversion failed: {str(e)}")
             return False
+            
+    def _create_individual_pdfs(self, image_paths, output_base_path, orientation,
+                              images_per_page, fit_mode, quality):
+        """Create individual PDFs for each image."""
+        try:
+            success = True
+            output_dir = os.path.dirname(output_base_path)
+            
+            # Ensure output directory exists
+            os.makedirs(output_dir, exist_ok=True)
+            
+            for image_path in image_paths:
+                # Generate output path
+                filename = os.path.splitext(os.path.basename(image_path))[0]
+                pdf_path = os.path.join(output_dir, f"{filename}.pdf")
+                
+                # Create PDF for single image
+                pdf = FPDF()
+                pdf.set_auto_page_break(auto=True, margin=15)
+                self._add_images_to_page(pdf, [image_path], orientation, fit_mode, quality)
+                pdf.output(pdf_path)
+                logger.info(f"Created individual PDF: {pdf_path}")
+            
+            return success
+            
+        except Exception as e:
+            logger.error(f"Failed to create individual PDFs: {str(e)}")
+            return False
+            
+    def _create_combined_pdf(self, image_paths, output_path, orientation,
+                           images_per_page, fit_mode, quality):
+        """Create a single PDF containing all images."""
+        try:
+            # Ensure output path has .pdf extension
+            if not output_path.lower().endswith('.pdf'):
+                output_path = os.path.splitext(output_path)[0] + '.pdf'
+            
+            # Create PDF
+            pdf = FPDF()
+            pdf.set_auto_page_break(auto=True, margin=15)
+            
+            # Process images in batches based on images_per_page
+            images_per_page = int(images_per_page)  # Ensure it's an integer
+            total_images = len(image_paths)
+            
+            for i in range(0, total_images, images_per_page):
+                # Get current batch of images
+                batch = image_paths[i:i + images_per_page]
+                self._add_images_to_page(pdf, batch, orientation, fit_mode, quality)
+                logger.info(f"Added page {i // images_per_page + 1} with {len(batch)} images")
+            
+            # Save the PDF
+            pdf.output(output_path)
+            logger.info(f"Created combined PDF: {output_path}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to create combined PDF: {str(e)}")
+            return False
+
+    def _add_images_to_page(self, pdf, image_paths, orientation, fit_mode, quality):
+        """Add a batch of images to a single PDF page with dynamic layout."""
+        try:
+            # Determine page orientation based on first image if Auto
+            first_image = Image.open(image_paths[0])
+            auto_orientation = first_image.width > first_image.height
+            first_image.close()
+            
+            if orientation == 'Auto':
+                pdf.add_page('L' if auto_orientation else 'P')
+            else:
+                pdf.add_page('L' if orientation == 'Landscape' else 'P')
+            
+            # Get number of images for this page
+            num_images = len(image_paths)
+            
+            # Calculate layout based on number of images
+            layouts = self._calculate_layout(num_images)
+            
+            # Add images to page
+            for image_path, layout in zip(image_paths, layouts):
+                x1, y1, x2, y2 = layout
+                with Image.open(image_path) as img:
+                    # Calculate dimensions based on fit mode
+                    if fit_mode == 'Stretch to fill':
+                        w = (x2 - x1) * pdf.w
+                        h = (y2 - y1) * pdf.h
+                    elif fit_mode == 'Actual size':
+                        w = min((x2 - x1) * pdf.w, img.width)
+                        h = min((y2 - y1) * pdf.h, img.height)
+                    else:  # Fit to page
+                        rect_w = (x2 - x1) * pdf.w
+                        rect_h = (y2 - y1) * pdf.h
+                        img_ratio = img.width / img.height
+                        rect_ratio = rect_w / rect_h
+                        
+                        if img_ratio > rect_ratio:
+                            w = rect_w
+                            h = rect_w / img_ratio
+                        else:
+                            h = rect_h
+                            w = rect_h * img_ratio
+                    
+                    # Calculate position to center image in its cell
+                    x = x1 * pdf.w + ((x2 - x1) * pdf.w - w) / 2
+                    y = y1 * pdf.h + ((y2 - y1) * pdf.h - h) / 2
+                    
+                    # Convert quality setting to compression level
+                    if quality == 'High':
+                        compress = False
+                    elif quality == 'Medium':
+                        compress = True
+                    else:  # Low
+                        compress = True
+                        w = w * 0.75  # Reduce image size for low quality
+                        h = h * 0.75
+                    
+                    # Add image to PDF
+                    pdf.image(image_path, x, y, w, h)
+                    
+        except Exception as e:
+            logger.error(f"Failed to add images to page: {str(e)}")
+            raise  # Re-raise to be caught by calling function
+
+    def _calculate_layout(self, num_images):
+        """Calculate layout coordinates for the given number of images."""
+        if num_images == 1:
+            return [(0, 0, 1, 1)]
+        elif num_images == 2:
+            return [(0, 0, 0.5, 1), (0.5, 0, 1, 1)]
+        elif num_images <= 4:
+            # 2x2 grid
+            layouts = [
+                (0, 0, 0.5, 0.5),     # Top-left
+                (0.5, 0, 1, 0.5),     # Top-right
+                (0, 0.5, 0.5, 1),     # Bottom-left
+                (0.5, 0.5, 1, 1)      # Bottom-right
+            ]
+            return layouts[:num_images]  # Return only needed layouts
+        else:
+            # 3x2 grid (up to 6 images)
+            layouts = [
+                (0, 0, 0.33, 0.5),      # Top-left
+                (0.33, 0, 0.66, 0.5),   # Top-middle
+                (0.66, 0, 1, 0.5),      # Top-right
+                (0, 0.5, 0.33, 1),      # Bottom-left
+                (0.33, 0.5, 0.66, 1),   # Bottom-middle
+                (0.66, 0.5, 1, 1)       # Bottom-right
+            ]
+            return layouts[:num_images]  # Return only needed layouts
             
     def convert_from_pdf(self, pdf_path: str, output_dir: str) -> bool:
         """Convert PDF to images"""
