@@ -44,20 +44,21 @@ class ImageProcessor:
     def generate_output_path(self, input_path: str, output_dir: str, 
                            naming_option: str = 'same', 
                            custom_suffix: str = '',
-                           sequence_number: int = None) -> str:
+                           file_index: int = None) -> str:
         """Generate output path based on naming options"""
         try:
             # Get just the filename from the input path
             filename = os.path.basename(input_path)
             name, ext = os.path.splitext(filename)
             
-            # Generate new filename based on naming option
+            # For 'same' naming option, use the original filename as is
             if naming_option == 'same':
                 new_name = filename
-            elif naming_option == 'custom':
+            # For custom suffix or sequential, add to the original name
+            elif naming_option == 'custom' and custom_suffix:
                 new_name = f"{name}_{custom_suffix}{ext}"
-            elif naming_option == 'sequential':
-                new_name = f"{name}_{sequence_number}{ext}"
+            elif naming_option == 'sequential' and file_index is not None:
+                new_name = f"{name}_{file_index}{ext}"
             else:
                 new_name = filename
                 
@@ -647,13 +648,40 @@ class ImageProcessor:
             logger.error(f"PDF to image conversion failed: {str(e)}")
             return False
 
-    def process_with_verification(self, operation_func, input_path: str, 
-                                output_path: str, **kwargs) -> bool:
-        """Process file with disk space verification"""
+    def process_with_verification(self, process_func, input_path: str, output_path: str, 
+                                  naming_option: str = 'same', custom_suffix: str = '',
+                                  file_index: int = None, **kwargs) -> bool:
+        """Process a file with verification of input and output"""
         try:
-            if not self.verify_disk_space(input_path, output_path):
+            # Verify input file exists and is readable
+            if not os.path.isfile(input_path):
+                logger.error(f"Input file does not exist: {input_path}")
                 return False
-            return operation_func(input_path, output_path, **kwargs)
+                
+            # For temporary files, use the original name first
+            if '.temp' in output_path:
+                final_output_path = output_path
+            else:
+                # Generate proper output path with naming convention for final output
+                output_dir = os.path.dirname(output_path)
+                final_output_path = self.generate_output_path(
+                    input_path, output_dir, 
+                    naming_option=naming_option,
+                    custom_suffix=custom_suffix,
+                    file_index=file_index
+                )
+                
+                if not final_output_path:
+                    logger.error("Failed to generate output path")
+                    return False
+                
+            # Verify disk space
+            if not self.verify_disk_space(input_path, final_output_path):
+                return False
+            
+            # Process the file
+            return process_func(input_path, final_output_path, **kwargs)
+            
         except Exception as e:
             logger.error(f"Processing failed: {str(e)}")
             return False

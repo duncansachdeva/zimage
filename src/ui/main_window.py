@@ -150,78 +150,84 @@ class WorkerThread(QThread):
                     if action.name == "Image to PDF":
                         ext = ".pdf"
                     
-                    if self.naming_option == 'custom':
-                        new_name = f"{name}_{self.custom_suffix}{ext}"
-                    elif self.naming_option == 'sequential':
-                        new_name = f"{name}_{i+1}{ext}"
-                    else:
-                        new_name = filename
-                        
-                    # For final action, save directly to output directory
+                    # Let the processor handle the naming
                     if action == self.actions[-1]:
-                        output_path = os.path.join(self.output_dir, new_name)
+                        output_path = os.path.join(self.output_dir, filename)
                     else:
-                        output_path = os.path.join(temp_dir, new_name)
+                        output_path = os.path.join(temp_dir, filename)
                     
                     # Process the file
-                    success = False
-                    if action.name == "Enhance Quality":
-                        success = self.processor.process_with_verification(
-                            self.processor.enhance_quality,
-                            input_path, output_path
-                        )
-                    elif action.name == "Resize Image":
-                        success = self.processor.process_with_verification(
-                            self.processor.resize_image,
-                            input_path, output_path,
-                            **action.params
-                        )
-                    elif action.name == "Reduce File Size":
-                        success = self.processor.process_with_verification(
-                            self.processor.reduce_file_size,
-                            input_path, output_path,
-                            **action.params
-                        )
-                    elif action.name == "PDF to Image":
-                        # Create output directory for PDF pages
-                        pdf_output_dir = os.path.join(temp_dir if action != self.actions[-1] else self.output_dir, f"{name}_pages")
-                        os.makedirs(pdf_output_dir, exist_ok=True)
+                    try:
+                        success = False
+                        if action.name == "Enhance Quality":
+                            success = self.processor.process_with_verification(
+                                self.processor.enhance_quality,
+                                input_path, output_path,
+                                naming_option=self.naming_option,
+                                custom_suffix=self.custom_suffix,
+                                file_index=i+1
+                            )
+                        elif action.name == "Resize Image":
+                            success = self.processor.process_with_verification(
+                                self.processor.resize_image,
+                                input_path, output_path,
+                                naming_option=self.naming_option,
+                                custom_suffix=self.custom_suffix,
+                                file_index=i+1,
+                                **action.params
+                            )
+                        elif action.name == "Reduce File Size":
+                            success = self.processor.process_with_verification(
+                                self.processor.reduce_file_size,
+                                input_path, output_path,
+                                naming_option=self.naming_option,
+                                custom_suffix=self.custom_suffix,
+                                file_index=i+1,
+                                **action.params
+                            )
+                        elif action.name == "PDF to Image":
+                            # Create output directory for PDF pages
+                            pdf_output_dir = os.path.join(temp_dir if action != self.actions[-1] else self.output_dir, f"{name}_pages")
+                            os.makedirs(pdf_output_dir, exist_ok=True)
+                            
+                            # Convert PDF to images
+                            success = self.processor.pdf_to_image(
+                                input_path,
+                                pdf_output_dir,
+                                **action.params
+                            )
+                            
+                            if success:
+                                # Add all generated images to the new files list
+                                format_ext = action.params.get('format', 'jpg').lower()
+                                new_files.extend([
+                                    os.path.join(pdf_output_dir, f)
+                                    for f in os.listdir(pdf_output_dir)
+                                    if f.lower().endswith(f'.{format_ext}')
+                                ])
+                                continue
+                        elif action.name == "Upscale Image (Waifu2x)":
+                            success = self.processor.upscale_image_waifu2x(
+                                input_path, output_path,
+                                **action.params
+                            )
+                        elif action.name == "Image to PDF":
+                            success = self.processor.convert_to_pdf(
+                                [input_path],
+                                output_path,
+                                **action.params
+                            )
                         
-                        # Convert PDF to images
-                        success = self.processor.pdf_to_image(
-                            input_path,
-                            pdf_output_dir,
-                            **action.params
-                        )
+                        if not success:
+                            self.error.emit(f"Failed to process {filename}")
+                            return
                         
-                        if success:
-                            # Add all generated images to the new files list
-                            format_ext = action.params.get('format', 'jpg').lower()
-                            new_files.extend([
-                                os.path.join(pdf_output_dir, f)
-                                for f in os.listdir(pdf_output_dir)
-                                if f.lower().endswith(f'.{format_ext}')
-                            ])
-                            continue
-                    elif action.name == "Upscale Image (Waifu2x)":
-                        success = self.processor.upscale_image_waifu2x(
-                            input_path, output_path,
-                            **action.params
-                        )
-                    elif action.name == "Image to PDF":
-                        success = self.processor.convert_to_pdf(
-                            [input_path],
-                            output_path,
-                            **action.params
-                        )
-                    
-                    if not success:
-                        self.error.emit(f"Failed to process {filename}")
+                        new_files.append(output_path)
+                        current_step += 1
+                        self.progress.emit(int(current_step * 100 / total_steps))
+                    except Exception as e:
+                        self.error.emit(f"Error processing {filename}: {e}")
                         return
-                        
-                    new_files.append(output_path)
-                    current_step += 1
-                    self.progress.emit(int(current_step * 100 / total_steps))
                 
                 # Update current files for next action
                 current_files = new_files
