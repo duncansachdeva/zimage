@@ -53,32 +53,13 @@ class Action:
     
     def __str__(self):
         try:
-            # Handle empty or None name
             if not self.name:
                 return "Unnamed Action"
-                
-            # Handle empty or None params
+            
             if not self.params:
                 return self.name
-                
-            # Convert params to strings safely
-            param_pairs = []
-            for k, v in self.params.items():
-                try:
-                    # Skip None values
-                    if v is None:
-                        continue
-                    # Convert key and value to strings safely
-                    key_str = str(k) if k is not None else ""
-                    val_str = str(v) if v is not None else ""
-                    if key_str and val_str:  # Only add if both parts are non-empty
-                        param_pairs.append(f"{key_str}: {val_str}")
-                except Exception as param_err:
-                    logger.debug(f"Error converting parameter {k}: {param_err}")
-                    continue
-                    
-            # Join parameters if any exist
-            param_str = ", ".join(param_pairs)
+            
+            param_str = ", ".join(f"{k}: {v}" for k, v in self.params.items() if v is not None)
             return f"{self.name} ({param_str})" if param_str else self.name
             
         except Exception as e:
@@ -650,7 +631,10 @@ class MainWindow(QMainWindow):
     def update_action_queue(self):
         """Update the actions queue based on selected actions"""
         try:
-            self.actions_queue.clear()
+            # Store existing action parameters
+            existing_params = {action.name: action.params for action in self.actions_queue}
+            
+            self.actions_queue = []  # Clear existing queue
             
             # Check for incompatible actions
             has_pdf_files = any(f.lower().endswith('.pdf') for f in self.files) if self.files else False
@@ -662,132 +646,49 @@ class MainWindow(QMainWindow):
                     
                 action_name = check.text()
                 
-                # Validate action compatibility
-                if has_pdf_files and action_name in ["Enhance Quality", "Resize Image", "Image to PDF"]:
-                    check.setChecked(False)
-                    QMessageBox.warning(self, "Incompatible Action",
-                                      f"'{action_name}' cannot be used with PDF files. Please convert PDFs to images first.")
-                    continue
-                    
-                if has_image_files and action_name == "PDF to Image":
-                    check.setChecked(False)
-                    QMessageBox.warning(self, "Incompatible Action",
-                                      "'PDF to Image' can only be used with PDF files.")
-                    continue
-                
                 # Initialize action with default parameters
-                default_params = {}
-                
-                if action_name == "Enhance Quality":
-                    default_params = {
-                        'level': 'High'
-                    }
-                    if hasattr(self, 'enhance_level_combo'):
-                        combo = self.enhance_level_combo
-                        if combo and combo.isVisible() and not combo.parent().isHidden():
-                            try:
-                                # Extract level from display text (e.g., "High (100)" -> "High")
-                                level_text = combo.currentText().split()[0]
-                                default_params.update({
-                                    'level': level_text
-                                })
-                            except (RuntimeError, AttributeError):
-                                logger.debug(f"Widget for {action_name} was deleted or invalid, using default values")
-                
-                elif action_name == "PDF to Image":
-                    default_params = {
-                        'format': 'png',
-                        'dpi': 300,
-                        'quality': 95,
-                        'color_mode': 'RGB'
-                    }
-                    if all(hasattr(self, attr) for attr in ['format_combo', 'dpi_spin', 'quality_spin', 'color_combo']):
-                        try:
-                            if (self.format_combo and self.format_combo.isVisible() and 
-                                not self.format_combo.parent().isHidden()):
-                                default_params.update({
-                                    'format': self.format_combo.currentText().lower(),
-                                    'dpi': self.dpi_spin.value(),
-                                    'quality': self.quality_spin.value(),
-                                    'color_mode': self.color_combo.currentText()
-                                })
-                        except (RuntimeError, AttributeError):
-                            logger.debug(f"Widget for {action_name} was deleted or invalid, using default values")
-                        
-                elif action_name == "Image to PDF":
-                    default_params = {
-                        'combine_files': True,
-                        'orientation': 'Auto',
-                        'images_per_page': 1,
-                        'fit_mode': 'Fit to page',
-                        'quality': 'High'
-                    }
-                    if hasattr(self, 'combine_pdf_check'):
-                        try:
-                            if (self.combine_pdf_check and self.combine_pdf_check.isVisible() and 
-                                not self.combine_pdf_check.parent().isHidden()):
-                                default_params.update({
-                                    'combine_files': self.combine_pdf_check.isChecked(),
-                                    'orientation': self.orientation_combo.currentText(),
-                                    'images_per_page': int(self.images_per_page_combo.currentText()),
-                                    'fit_mode': self.fit_mode_combo.currentText(),
-                                    'quality': self.pdf_quality_combo.currentText()
-                                })
-                        except (RuntimeError, AttributeError):
-                            logger.debug(f"Widget for {action_name} was deleted or invalid, using default values")
-                        
-                elif action_name == "Resize Image":
-                    default_params = {
-                        'width': 2500,
-                        'height': 0,
-                        'maintain_aspect': True
-                    }
-                    if hasattr(self, 'width_spin'):
-                        try:
-                            if self.width_spin and self.width_spin.isVisible() and not self.width_spin.parent().isHidden():
-                                default_params.update({
-                                    'width': self.width_spin.value(),
-                                    'height': self.height_spin.value(),
-                                    'maintain_aspect': self.maintain_aspect_check.isChecked()
-                                })
-                        except (RuntimeError, AttributeError):
-                            logger.debug(f"Widget for {action_name} was deleted or invalid, using default values")
-                        
-                elif action_name == "Reduce File Size":
-                    default_params = {
-                        'target_size_mb': 0.5
-                    }
-                    if hasattr(self, 'target_size_spin'):
-                        try:
-                            if (self.target_size_spin and self.target_size_spin.isVisible() and 
-                                not self.target_size_spin.parent().isHidden()):
-                                default_params.update({
-                                    'target_size_mb': self.target_size_spin.value()
-                                })
-                        except (RuntimeError, AttributeError):
-                            logger.debug(f"Widget for {action_name} was deleted or invalid, using default values")
-                        
-                elif action_name == "Upscale Image (Waifu2x)":
-                    default_params = {
-                        'scale': 2,
-                        'noise': 1
-                    }
-                    if all(hasattr(self, attr) for attr in ['scale_factor_combo', 'noise_level_combo']):
-                        try:
-                            if (self.scale_factor_combo and self.scale_factor_combo.isVisible() and 
-                                not self.scale_factor_combo.parent().isHidden()):
-                                scale_map = {"2x": 2, "4x": 4, "8x": 8}
-                                noise_map = {"None": 0, "Low": 1, "Medium": 2, "High": 3}
-                                default_params.update({
-                                    'scale': scale_map[self.scale_factor_combo.currentText()],
-                                    'noise': noise_map[self.noise_level_combo.currentText()]
-                                })
-                        except (RuntimeError, AttributeError):
-                            logger.debug(f"Widget for {action_name} was deleted or invalid, using default values")
-                
-                # Create action with parameters
                 action = Action(action_name)
-                action.params = default_params
+                
+                # If we have existing parameters for this action, use them
+                if action_name in existing_params:
+                    action.params = existing_params[action_name]
+                else:
+                    # Set default parameters based on action type
+                    if action_name == "Enhance Quality":
+                        action.params = {'level': self.enhance_level_combo.currentText().split()[0] if hasattr(self, 'enhance_level_combo') else 'High'}
+                    elif action_name == "Resize Image":
+                        action.params = {
+                            'width': self.width_spin.value() if hasattr(self, 'width_spin') else 2500,
+                            'height': self.height_spin.value() if hasattr(self, 'height_spin') else 0,
+                            'maintain_aspect': self.maintain_aspect_check.isChecked() if hasattr(self, 'maintain_aspect_check') else True
+                        }
+                    elif action_name == "Reduce File Size":
+                        action.params = {
+                            'target_size_mb': self.target_size_spin.value() if hasattr(self, 'target_size_spin') else 0.5
+                        }
+                    elif action_name == "Image to PDF":
+                        action.params = {
+                            'combine_files': self.combine_pdf_check.isChecked() if hasattr(self, 'combine_pdf_check') else True,
+                            'orientation': self.orientation_combo.currentText() if hasattr(self, 'orientation_combo') else 'Auto',
+                            'images_per_page': int(self.images_per_page_combo.currentText()) if hasattr(self, 'images_per_page_combo') else 1,
+                            'fit_mode': self.fit_mode_combo.currentText() if hasattr(self, 'fit_mode_combo') else 'Fit to page',
+                            'quality': self.pdf_quality_combo.currentText() if hasattr(self, 'pdf_quality_combo') else 'High'
+                        }
+                    elif action_name == "PDF to Image":
+                        action.params = {
+                            'format': self.format_combo.currentText().lower() if hasattr(self, 'format_combo') else 'png',
+                            'dpi': self.dpi_spin.value() if hasattr(self, 'dpi_spin') else 300,
+                            'quality': self.quality_spin.value() if hasattr(self, 'quality_spin') else 95,
+                            'color_mode': self.color_combo.currentText() if hasattr(self, 'color_combo') else 'RGB'
+                        }
+                    elif action_name == "Upscale Image (Waifu2x)":
+                        action.params = {
+                            'scale_factor': int(self.scale_factor_combo.currentText().replace('x', '')) if hasattr(self, 'scale_factor_combo') else 2,
+                            'noise_level': int(self.noise_level_combo.currentText().split('Level ')[1].split(')')[0]) if hasattr(self, 'noise_level_combo') else 1,
+                            'model_type': self.model_type_combo.currentText().lower() if hasattr(self, 'model_type_combo') else 'auto'
+                        }
+                
+                # Add action to queue
                 self.actions_queue.append(action)
             
             # Update the queue display
@@ -795,10 +696,8 @@ class MainWindow(QMainWindow):
             
         except Exception as e:
             logger.error(f"Error updating action queue: {e}")
-            QMessageBox.warning(self, "Error", f"Failed to update action queue: {str(e)}")
-            # Ensure the queue display is still updated even if there was an error
-            self.update_queue_display()
-        
+            self.update_queue_display()  # Ensure queue display is updated even if there's an error
+
     def update_queue_display(self):
         """Update the queue list widget"""
         try:
@@ -1115,6 +1014,9 @@ class MainWindow(QMainWindow):
             self.tab_widget.setDocumentMode(True)  # Makes tabs look cleaner
             self.options_layout.addWidget(self.tab_widget)
 
+            # Store existing parameters before recreating widgets
+            existing_params = {action.name: action.params for action in self.actions_queue}
+
             # Add parameters for selected actions
             for check in selected_actions:
                 # Create a tab for each action
@@ -1123,195 +1025,161 @@ class MainWindow(QMainWindow):
                 layout.setContentsMargins(10, 10, 10, 10)  # Add some padding
                 layout.setSpacing(10)  # Space between form elements
 
-                if check.text() == "Enhance Quality":
+                action_name = check.text()
+                current_params = existing_params.get(action_name, {})
+
+                if action_name == "Enhance Quality":
                     self.enhance_level_combo = QComboBox()
                     self.enhance_level_combo.addItems([
                         "High (100)", 
                         "Medium (92)", 
                         "Low (85)"
                     ])
-                    self.enhance_level_combo.setCurrentText("High (100)")
-                    self.enhance_level_combo.currentTextChanged.connect(self.update_action_queue)
+                    # Set current value from existing parameters
+                    level = current_params.get('level', 'High')
+                    self.enhance_level_combo.setCurrentText(f"{level} (100)" if level == "High" else 
+                                                          f"{level} (92)" if level == "Medium" else 
+                                                          f"{level} (85)")
+                    self.enhance_level_combo.currentTextChanged.connect(lambda: self.on_parameter_changed("Enhance Quality"))
                     layout.addRow("Quality Level:", self.enhance_level_combo)
+                    self.tab_widget.addTab(tab, "Enhance Quality")
                 
-                elif check.text() == "PDF to Image":
+                elif action_name == "PDF to Image":
                     # Format selection
                     self.format_combo = QComboBox()
                     self.format_combo.setObjectName("format_combo")
                     self.format_combo.addItems(["PNG", "JPG", "TIFF"])
+                    self.format_combo.setCurrentText(current_params.get('format', 'PNG').upper())
                     layout.addRow("Format:", self.format_combo)
-                    self.format_combo.currentTextChanged.connect(self.update_action_queue)
+                    self.format_combo.currentTextChanged.connect(lambda: self.on_parameter_changed("PDF to Image"))
 
                     # DPI selection
                     self.dpi_spin = QSpinBox()
                     self.dpi_spin.setObjectName("dpi_spin")
                     self.dpi_spin.setRange(72, 600)
-                    self.dpi_spin.setValue(300)
+                    self.dpi_spin.setValue(current_params.get('dpi', 300))
                     layout.addRow("DPI:", self.dpi_spin)
-                    self.dpi_spin.valueChanged.connect(self.update_action_queue)
+                    self.dpi_spin.valueChanged.connect(lambda: self.on_parameter_changed("PDF to Image"))
 
                     # Quality selection (for JPG)
                     self.quality_spin = QSpinBox()
                     self.quality_spin.setObjectName("quality_spin")
                     self.quality_spin.setRange(1, 100)
-                    self.quality_spin.setValue(95)
+                    self.quality_spin.setValue(current_params.get('quality', 95))
                     layout.addRow("JPEG Quality:", self.quality_spin)
-                    self.quality_spin.valueChanged.connect(self.update_action_queue)
+                    self.quality_spin.valueChanged.connect(lambda: self.on_parameter_changed("PDF to Image"))
 
                     # Color mode selection
                     self.color_combo = QComboBox()
                     self.color_combo.setObjectName("color_combo")
                     self.color_combo.addItems(["RGB", "RGBA"])
+                    self.color_combo.setCurrentText(current_params.get('color_mode', 'RGB'))
                     layout.addRow("Color Mode:", self.color_combo)
-                    self.color_combo.currentTextChanged.connect(self.update_action_queue)
+                    self.color_combo.currentTextChanged.connect(lambda: self.on_parameter_changed("PDF to Image"))
 
                     # Enable/disable quality spin based on format
                     self.format_combo.currentTextChanged.connect(
                         lambda fmt: self.quality_spin.setEnabled(fmt.upper() == 'JPG')
                     )
-                    self.quality_spin.setEnabled(False)  # Initially disabled as PNG is default
+                    self.quality_spin.setEnabled(self.format_combo.currentText().upper() == 'JPG')
+                    self.tab_widget.addTab(tab, "PDF to Image")
 
-                elif check.text() == "Image to PDF":
+                elif action_name == "Image to PDF":
                     # Combine files option
                     self.combine_pdf_check = QCheckBox("Combine all images into one PDF")
                     self.combine_pdf_check.setObjectName("combine_pdf_check")
-                    self.combine_pdf_check.setChecked(True)
+                    self.combine_pdf_check.setChecked(current_params.get('combine_files', True))
                     layout.addRow(self.combine_pdf_check)
-                    self.combine_pdf_check.stateChanged.connect(self.update_action_queue)
+                    self.combine_pdf_check.stateChanged.connect(lambda: self.on_parameter_changed("Image to PDF"))
 
                     # Orientation selection
                     self.orientation_combo = QComboBox()
                     self.orientation_combo.setObjectName("orientation_combo")
                     self.orientation_combo.addItems(["Auto", "Portrait", "Landscape"])
+                    self.orientation_combo.setCurrentText(current_params.get('orientation', 'Auto'))
                     layout.addRow("Orientation:", self.orientation_combo)
-                    self.orientation_combo.currentTextChanged.connect(self.update_action_queue)
+                    self.orientation_combo.currentTextChanged.connect(lambda: self.on_parameter_changed("Image to PDF"))
 
                     # Images per page selection
                     self.images_per_page_combo = QComboBox()
                     self.images_per_page_combo.setObjectName("images_per_page_combo")
                     self.images_per_page_combo.addItems(["1", "2", "4", "6"])
+                    self.images_per_page_combo.setCurrentText(str(current_params.get('images_per_page', 1)))
                     layout.addRow("Images per Page:", self.images_per_page_combo)
-                    self.images_per_page_combo.currentTextChanged.connect(self.update_action_queue)
+                    self.images_per_page_combo.currentTextChanged.connect(lambda: self.on_parameter_changed("Image to PDF"))
 
                     # Fit mode selection
                     self.fit_mode_combo = QComboBox()
                     self.fit_mode_combo.setObjectName("fit_mode_combo")
                     self.fit_mode_combo.addItems(["Fit to page", "Stretch to fill", "Actual size"])
+                    self.fit_mode_combo.setCurrentText(current_params.get('fit_mode', 'Fit to page'))
                     layout.addRow("Fit Mode:", self.fit_mode_combo)
-                    self.fit_mode_combo.currentTextChanged.connect(self.update_action_queue)
+                    self.fit_mode_combo.currentTextChanged.connect(lambda: self.on_parameter_changed("Image to PDF"))
 
                     # PDF Quality selection
                     self.pdf_quality_combo = QComboBox()
                     self.pdf_quality_combo.setObjectName("pdf_quality_combo")
                     self.pdf_quality_combo.addItems(["High", "Medium", "Low"])
+                    self.pdf_quality_combo.setCurrentText(current_params.get('quality', 'High'))
                     layout.addRow("Quality:", self.pdf_quality_combo)
-                    self.pdf_quality_combo.currentTextChanged.connect(self.update_action_queue)
+                    self.pdf_quality_combo.currentTextChanged.connect(lambda: self.on_parameter_changed("Image to PDF"))
+                    self.tab_widget.addTab(tab, "Image to PDF")
 
-                    # Preview label
-                    self.pdf_preview_label = QLabel()
-                    self.pdf_preview_label.setObjectName("pdf_preview_label")
-                    self.pdf_preview_label.setStyleSheet("color: gray;")
-                    self.pdf_preview_label.setWordWrap(True)
-                    layout.addRow(self.pdf_preview_label)
+                elif action_name == "Resize Image":
+                    # Width input
+                    self.width_spin = QSpinBox()
+                    self.width_spin.setRange(1, 10000)
+                    self.width_spin.setValue(current_params.get('width', 2500))
+                    layout.addRow("Width:", self.width_spin)
+                    self.width_spin.valueChanged.connect(lambda: self.on_parameter_changed("Resize Image"))
 
-                elif check.text() == "Resize Image":
-                    # Target dimension input
-                    dim_layout = QHBoxLayout()
-                    dim_label = QLabel("Target dimension (px):")
-                    self.target_dim_spin = QSpinBox()
-                    self.target_dim_spin.setObjectName("target_dim_spin")
-                    self.target_dim_spin.setRange(1, 10000)
-                    self.target_dim_spin.setValue(2000)
-                    dim_layout.addWidget(dim_label)
-                    dim_layout.addWidget(self.target_dim_spin)
-                    layout.addRow(dim_layout)
+                    # Height input
+                    self.height_spin = QSpinBox()
+                    self.height_spin.setRange(0, 10000)
+                    self.height_spin.setValue(current_params.get('height', 0))
+                    layout.addRow("Height (0 for auto):", self.height_spin)
+                    self.height_spin.valueChanged.connect(lambda: self.on_parameter_changed("Resize Image"))
 
-                    # Constraint radio buttons
-                    constraint_layout = QHBoxLayout()
-                    constraint_label = QLabel("Constrain:")
-                    self.width_radio = QRadioButton("Width")
-                    self.width_radio.setObjectName("width_radio")
-                    self.height_radio = QRadioButton("Height")
-                    self.height_radio.setObjectName("height_radio")
-                    self.width_radio.setChecked(True)
-                    constraint_layout.addWidget(constraint_label)
-                    constraint_layout.addWidget(self.width_radio)
-                    constraint_layout.addWidget(self.height_radio)
-                    layout.addRow(constraint_layout)
+                    # Maintain aspect ratio
+                    self.maintain_aspect_check = QCheckBox("Maintain aspect ratio")
+                    self.maintain_aspect_check.setChecked(current_params.get('maintain_aspect', True))
+                    layout.addRow(self.maintain_aspect_check)
+                    self.maintain_aspect_check.stateChanged.connect(lambda: self.on_parameter_changed("Resize Image"))
+                    self.tab_widget.addTab(tab, "Resize Image")
 
-                    # Quality spinner
-                    quality_layout = QHBoxLayout()
-                    quality_label = QLabel("Quality:")
-                    self.quality_spin = QSpinBox()
-                    self.quality_spin.setObjectName("quality_spin")
-                    self.quality_spin.setRange(1, 100)
-                    self.quality_spin.setValue(100)  # Default to 100
-                    quality_layout.addWidget(quality_label)
-                    quality_layout.addWidget(self.quality_spin)
-                    layout.addRow(quality_layout)
-
-                    # Preview label for dimensions
-                    self.resize_preview_label = QLabel()
-                    self.resize_preview_label.setObjectName("resize_preview_label")
-                    self.resize_preview_label.setStyleSheet("color: gray;")
-                    self.resize_preview_label.setWordWrap(True)
-                    layout.addRow(self.resize_preview_label)
-
-                    # Connect signals
-                    self.target_dim_spin.valueChanged.connect(self.update_resize_parameters)
-                    self.width_radio.toggled.connect(self.update_resize_parameters)
-                    self.height_radio.toggled.connect(self.update_resize_parameters)
-                    self.quality_spin.valueChanged.connect(self.update_resize_parameters)
-
-                elif check.text() == "Reduce File Size":
-                    # Target size input
-                    size_layout = QHBoxLayout()
-                    size_label = QLabel("Target Size (MB):")
+                elif action_name == "Reduce File Size":
                     self.target_size_spin = QDoubleSpinBox()
-                    self.target_size_spin.setObjectName("target_size_spin")
-                    self.target_size_spin.setRange(0.1, 100.0)  # 100KB to 100MB
-                    self.target_size_spin.setDecimals(1)
-                    self.target_size_spin.setSingleStep(0.1)
-                    self.target_size_spin.setValue(1.0)  # Default 1MB
-                    size_layout.addWidget(size_label)
-                    size_layout.addWidget(self.target_size_spin)
-                    layout.addRow(size_layout)
+                    self.target_size_spin.setRange(0.1, 100.0)
+                    self.target_size_spin.setValue(current_params.get('target_size_mb', 0.5))
+                    self.target_size_spin.setSuffix(" MB")
+                    layout.addRow("Target Size:", self.target_size_spin)
+                    self.target_size_spin.valueChanged.connect(lambda: self.on_parameter_changed("Reduce File Size"))
+                    self.tab_widget.addTab(tab, "Reduce Size")
 
-                    # Quality priority slider
-                    self.quality_priority_slider = QSlider(Qt.Orientation.Horizontal)
-                    self.quality_priority_slider.setObjectName("quality_priority_slider")
-                    self.quality_priority_slider.setRange(0, 100)
-                    self.quality_priority_slider.setValue(70)
-                    layout.addRow("Quality Priority:", self.quality_priority_slider)
-
-                    # Preview label
-                    self.resize_preview_label = QLabel()
-                    self.resize_preview_label.setObjectName("resize_preview_label")
-                    self.resize_preview_label.setStyleSheet("color: gray;")
-                    self.resize_preview_label.setWordWrap(True)
-                    layout.addRow(self.resize_preview_label)
-
-                    # Connect signals
-                    self.target_size_spin.valueChanged.connect(self.update_reduce_size_parameters)
-                    self.quality_priority_slider.valueChanged.connect(self.update_reduce_size_parameters)
-
-                elif check.text() == "Upscale Image (Waifu2x)":
-                    # Scale factor
+                elif action_name == "Upscale Image (Waifu2x)":
+                    # Scale factor selection
                     self.scale_factor_combo = QComboBox()
-                    self.scale_factor_combo.setObjectName("scale_factor_combo")
-                    self.scale_factor_combo.addItems(["2x", "4x", "8x"])
+                    self.scale_factor_combo.addItems(['1x', '2x', '4x'])
+                    self.scale_factor_combo.setCurrentText(f"{current_params.get('scale_factor', 2)}x")
+                    self.scale_factor_combo.currentTextChanged.connect(lambda: self.on_parameter_changed("Upscale Image (Waifu2x)"))
                     layout.addRow("Scale Factor:", self.scale_factor_combo)
-                    self.scale_factor_combo.currentTextChanged.connect(self.update_action_queue)
-
-                    # Noise reduction
+                    
+                    # Noise reduction level
                     self.noise_level_combo = QComboBox()
-                    self.noise_level_combo.setObjectName("noise_level_combo")
-                    self.noise_level_combo.addItems(["None", "Low", "Medium", "High"])
+                    self.noise_level_combo.addItems(['None (Level 0)', 'Light (Level 1)', 'Medium (Level 2)', 'High (Level 3)'])
+                    noise_level = current_params.get('noise_level', 1)
+                    noise_text = {0: 'None (Level 0)', 1: 'Light (Level 1)', 2: 'Medium (Level 2)', 3: 'High (Level 3)'}.get(noise_level, 'Light (Level 1)')
+                    self.noise_level_combo.setCurrentText(noise_text)
+                    self.noise_level_combo.currentTextChanged.connect(lambda: self.on_parameter_changed("Upscale Image (Waifu2x)"))
                     layout.addRow("Noise Reduction:", self.noise_level_combo)
-                    self.noise_level_combo.currentTextChanged.connect(self.update_action_queue)
-
-                # Add the tab with a clean title
-                self.tab_widget.addTab(tab, check.text().replace(" (Waifu2x)", ""))
+                    
+                    # Model type selection
+                    self.model_type_combo = QComboBox()
+                    self.model_type_combo.addItems(['Auto', 'Photo', 'Anime'])
+                    self.model_type_combo.setCurrentText(current_params.get('model_type', 'Auto').capitalize())
+                    self.model_type_combo.currentTextChanged.connect(lambda: self.on_parameter_changed("Upscale Image (Waifu2x)"))
+                    layout.addRow("Model Type:", self.model_type_combo)
+                    self.tab_widget.addTab(tab, "Waifu2x")
 
             # Save current actions to config and update queue immediately
             self.save_config()
@@ -1322,253 +1190,56 @@ class MainWindow(QMainWindow):
             # Ensure queue is updated even if there's an error
             self.update_action_queue()
 
-    def update_resize_parameters(self):
-        """Update both action parameters and previews for resize action"""
-        # Update action parameters in queue
-        for action in self.actions_queue:
-            if action.name == "Resize Image":
-                action.params.update({
-                    'target_dimension': self.target_dim_spin.value(),
-                    'constrain_width': self.width_radio.isChecked(),
-                    'quality': self.quality_spin.value()
-                })
-        
-        # Update queue display
-        self.update_queue_display()
-        
-        # Update preview
-        self.update_resize_preview()
-        
-    def update_resize_preview(self):
-        """Update the resize preview with enhanced information"""
-        if not hasattr(self, 'files') or not self.files:
-            self.resize_preview_label.setText("Drop images to see dimensions")
-            self.preview_label.clear()
-            return
-            
+    def on_parameter_changed(self, action_name):
+        """Handle parameter changes for any action"""
         try:
-            # Get number of images in queue
-            total_images = len(self.files)
-            
-            with Image.open(self.files[0]) as img:
-                # Store original dimensions
-                orig_width, orig_height = img.size
-                target_dim = self.target_dim_spin.value()
-                
-                # Calculate new dimensions
-                if self.width_radio.isChecked():
-                    new_width = target_dim
-                    new_height = int(orig_height * (target_dim / orig_width))
-                else:
-                    new_height = target_dim
-                    new_width = int(orig_width * (target_dim / orig_height))
-                
-                # Create informative preview text
-                preview_text = [
-                    "Preview of first image:",
-                    f"Original: {orig_width}px by {orig_height}px",
-                    f"Output: {new_width}px by {new_height}px"
-                ]
-                
-                # Add note about multiple images if applicable
-                if total_images > 1:
-                    preview_text.extend([
-                        "",  # Empty line for spacing
-                        f"Note: These parameters will be applied to all {total_images} images in queue.",
-                        "Final dimensions may vary based on each image's aspect ratio."
-                    ])
-                
-                self.resize_preview_label.setText("\n".join(preview_text))
-                
-                # Create preview image at target dimensions
-                preview_img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
-                
-                # Convert PIL image to RGB mode if necessary
-                if preview_img.mode != 'RGB':
-                    preview_img = preview_img.convert('RGB')
-                
-                # Convert to QPixmap
-                preview_data = preview_img.tobytes("raw", "RGB")
-                qimg = QImage(preview_data, new_width, new_height, 3 * new_width, QImage.Format.Format_RGB888)
-                pixmap = QPixmap.fromImage(qimg)
-                
-                # Scale the preview image to fit the preview area while maintaining aspect ratio
-                scaled_pixmap = pixmap.scaled(
-                    self.preview_label.size(),
-                    Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation
-                )
-                
-                # Update preview label
-                self.preview_label.setPixmap(scaled_pixmap)
-                
-        except Exception as e:
-            logger.error(f"Failed to update preview: {e}")
-            self.resize_preview_label.setText("Failed to update preview")
-            self.preview_label.clear()
-            
-    def update_reduce_size_parameters(self):
-        """Update both action parameters and previews for reduce size action"""
-        # Update action parameters in queue
-        for action in self.actions_queue:
-            if action.name == "Reduce File Size":
-                action.params.update({
-                    'target_size_mb': self.target_size_spin.value(),
-                    'quality_priority': self.quality_priority_slider.value() / 100.0
-                })
-        
-        # Update queue display
-        self.update_queue_display()
-        
-        # Update preview
-        self.update_reduce_size_preview()
-        
-    def update_reduce_size_preview(self):
-        """Update the preview area with file size information"""
-        if not hasattr(self, 'files') or not self.files:
-            self.resize_preview_label.setText("Drop images to see file size information")
-            self.preview_label.clear()
-            return
-            
-        try:
-            # Get first image file size
-            file_size = os.path.getsize(self.files[0]) / (1024 * 1024)  # Convert to MB
-            target_size = self.target_size_spin.value()
-            
-            # Calculate compression ratio and estimated quality
-            ratio = target_size / file_size
-            estimated_quality = int(ratio * 100)
-            estimated_quality = max(1, min(100, estimated_quality))
-            
-            # Create preview text
-            preview_text = [
-                "Preview of first image:",
-                f"Original size: {file_size:.1f} MB",
-                f"Target size: {target_size:.1f} MB",
-                f"Estimated quality: {estimated_quality}%"
-            ]
-            
-            # Add warning if compression is high
-            if ratio < 0.5:
-                preview_text.append("\nNote: High compression may affect image quality")
-            
-            # Add note for multiple images if applicable
-            if len(self.files) > 1:
-                preview_text.extend([
-                    "",
-                    f"Note: These settings will be applied to all {len(self.files)} images.",
-                    "Actual results may vary based on each image's content."
-                ])
-            
-            # Update preview label
-            self.resize_preview_label.setText("\n".join(preview_text))
-            
-            # Show preview of image with estimated quality
-            with Image.open(self.files[0]) as img:
-                # Create preview with estimated quality
-                preview_img = img.copy()
-                if preview_img.mode in ('RGBA', 'P'):
-                    preview_img = preview_img.convert('RGB')
-                
-                # Create a temporary buffer for the preview
-                temp_buffer = BytesIO()
-                preview_img.save(temp_buffer, format='JPEG', quality=estimated_quality)
-                temp_buffer.seek(0)
-                
-                # Load the compressed preview
-                preview_data = temp_buffer.getvalue()
-                qimg = QImage.fromData(preview_data)
-                pixmap = QPixmap.fromImage(qimg)
-                
-                # Scale to fit preview area while maintaining aspect ratio
-                scaled_pixmap = pixmap.scaled(
-                    self.preview_label.size(),
-                    Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation
-                )
-                
-                # Update preview image
-                self.preview_label.setPixmap(scaled_pixmap)
-                
-        except Exception as e:
-            logger.error(f"Failed to update reduce size preview: {e}")
-            self.resize_preview_label.setText("Failed to calculate file size")
-            self.preview_label.clear()
-            
-    def update_pdf_preview(self):
-        """Update the PDF preview with layout information"""
-        if not hasattr(self, 'files') or not self.files:
-            self.pdf_preview_label.setText("Drop images to see PDF layout preview")
-            return
-            
-        try:
-            # Get number of images
-            total_images = len(self.files)
-            images_per_page = int(self.images_per_page_combo.currentText())
-            orientation = self.orientation_combo.currentText()
-            fit_mode = self.fit_mode_combo.currentText()
-            
-            # Calculate pages needed
-            pages = (total_images + images_per_page - 1) // images_per_page
-            
-            # Create preview text
-            preview_text = [
-                f"PDF Layout Preview:",
-                f"Total Images: {total_images}",
-                f"Pages: {pages}",
-                f"Layout: {images_per_page} image(s) per page",
-                f"Orientation: {orientation}",
-                f"Fit Mode: {fit_mode}"
-            ]
-            
-            if self.combine_pdf_check.isChecked():
-                preview_text.append("Output: Single combined PDF file")
-            else:
-                preview_text.append("Output: Individual PDF files")
-            
-            self.pdf_preview_label.setText("\n".join(preview_text))
-            
-            # Update image preview if possible
-            if total_images > 0:
-                self.update_pdf_image_preview(self.files[0])
-                
-        except Exception as e:
-            logger.error(f"Failed to update PDF preview: {e}")
-            self.pdf_preview_label.setText("Failed to update preview")
-            
-    def update_pdf_image_preview(self, file_path):
-        """Update the preview area with the first page of a PDF file."""
-        try:
-            if not file_path or not os.path.exists(file_path):
-                return
+            # Find the action in the queue
+            for action in self.actions_queue:
+                if action.name == action_name:
+                    # Update parameters based on action type
+                    if action_name == "Enhance Quality":
+                        action.params = {
+                            'level': self.enhance_level_combo.currentText().split()[0]
+                        }
+                    elif action_name == "PDF to Image":
+                        action.params = {
+                            'format': self.format_combo.currentText().lower(),
+                            'dpi': self.dpi_spin.value(),
+                            'quality': self.quality_spin.value(),
+                            'color_mode': self.color_combo.currentText()
+                        }
+                    elif action_name == "Image to PDF":
+                        action.params = {
+                            'combine_files': self.combine_pdf_check.isChecked(),
+                            'orientation': self.orientation_combo.currentText(),
+                            'images_per_page': int(self.images_per_page_combo.currentText()),
+                            'fit_mode': self.fit_mode_combo.currentText(),
+                            'quality': self.pdf_quality_combo.currentText()
+                        }
+                    elif action_name == "Resize Image":
+                        action.params = {
+                            'width': self.width_spin.value(),
+                            'height': self.height_spin.value(),
+                            'maintain_aspect': self.maintain_aspect_check.isChecked()
+                        }
+                    elif action_name == "Reduce File Size":
+                        action.params = {
+                            'target_size_mb': self.target_size_spin.value()
+                        }
+                    elif action_name == "Upscale Image (Waifu2x)":
+                        action.params = {
+                            'scale_factor': int(self.scale_factor_combo.currentText().replace('x', '')),
+                            'noise_level': int(self.noise_level_combo.currentText().split('Level ')[1].split(')')[0]),
+                            'model_type': self.model_type_combo.currentText().lower()
+                        }
+                    break
 
-            # Check if the file is a PDF
-            if not file_path.lower().endswith('.pdf'):
-                return
-
-            # Get output directory from input field
-            output_dir = self.output_dir_input.text() or self.output_dir
-
-            # Convert the first page to a temporary image for preview
-            temp_dir = os.path.join(output_dir, '.temp')
-            os.makedirs(temp_dir, exist_ok=True)
-            temp_preview = os.path.join(temp_dir, 'preview.png')
-
-            # Use pdf2image to convert first page to PNG
-            try:
-                images = convert_from_path(file_path, first_page=1, last_page=1, dpi=72)
-                if images:
-                    images[0].save(temp_preview, 'PNG')
-                    self.update_preview(temp_preview)
-            except Exception as e:
-                self.logger.error(f"Failed to convert PDF to preview image: {str(e)}")
-                # Show a placeholder or message in the preview area
-                self.preview_label.setText("PDF Preview Not Available")
+            # Update the queue display
+            self.update_queue_display()
             
         except Exception as e:
-            self.logger.error(f"Failed to update PDF preview: {str(e)}")
-            self.preview_label.setText("Preview Not Available")
-            
+            logger.error(f"Error updating parameters for {action_name}: {e}")
+
 class PDFPreviewWidget(QWidget):
     """Widget for PDF preview with navigation"""
     

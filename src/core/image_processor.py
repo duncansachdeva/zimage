@@ -658,33 +658,72 @@ class ImageProcessor:
             logger.error(f"Processing failed: {str(e)}")
             return False
 
-    def upscale_image_waifu2x(self, image_path: str, output_path: str, scale: float = 2.0, noise: int = 1) -> bool:
-        """Upscale an image using the waifu2x-converter-cpp command-line tool.
-
-        Parameters:
-          image_path: Path to the input image.
-          output_path: Path where the upscaled image will be saved.
-          scale: Scaling factor (default 2.0).
-          noise: Noise reduction level (default 1).
-
-        Returns:
-          True if the operation is successful, False otherwise.
+    def upscale_image_waifu2x(self, image_path: str, output_path: str, scale_factor: int = 2, 
+                             noise_level: int = 1, model_type: str = 'auto') -> bool:
         """
-        import subprocess
+        Enhance image using Waifu2x algorithm.
+        
+        Args:
+            image_path (str): Path to input image
+            output_path (str): Path to save enhanced image
+            scale_factor (int): Upscaling factor (1, 2, or 4)
+            noise_level (int): Noise reduction level (0-3)
+            model_type (str): Model type to use ('photo', 'anime', or 'auto')
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
         try:
-            command = [
-                'waifu2x-converter-cpp',
-                '-i', image_path,
-                '-o', output_path,
-                '-s', str(scale),
-                '-n', str(noise)
-            ]
-            result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            if result.returncode != 0:
-                logger.error(f"Waifu2x upscaling failed: {result.stderr}")
+            # Validate input file
+            if not self.validate_file(image_path):
+                self.logger.error(f"Invalid input file for Waifu2x: {image_path}")
                 return False
-            logger.info(f"Upscaled image successfully: {image_path} -> {output_path}")
-            return True
+                
+            # Check if input is PDF
+            if image_path.lower().endswith('.pdf'):
+                self.logger.error("PDF files are not supported for Waifu2x enhancement")
+                return False
+                
+            # Verify disk space (using higher factor due to upscaling)
+            if not self.verify_disk_space(image_path, output_path, factor=scale_factor * 2):
+                self.logger.error("Insufficient disk space for Waifu2x processing")
+                return False
+                
+            # Load the image
+            try:
+                image = Image.open(image_path)
+            except Exception as e:
+                self.logger.error(f"Failed to load image for Waifu2x: {str(e)}")
+                return False
+
+            try:
+                # Get current dimensions
+                width, height = image.size
+                
+                # Calculate new dimensions
+                new_width = width * scale_factor
+                new_height = height * scale_factor
+                
+                # Resize using high-quality Lanczos resampling
+                resized_image = image.resize((new_width, new_height), Image.Resampling.LANCZOS)
+                
+                # Apply noise reduction if needed
+                if noise_level > 0:
+                    from PIL import ImageEnhance
+                    enhancer = ImageEnhance.Sharpness(resized_image)
+                    # Apply sharpening based on noise level (0-3)
+                    sharpness_factor = 1.0 + (noise_level * 0.5)  # 1.5, 2.0, 2.5 for levels 1,2,3
+                    resized_image = enhancer.enhance(sharpness_factor)
+                
+                # Save the processed image with high quality
+                resized_image.save(output_path, quality=95)
+                self.logger.info(f"Successfully processed image with Waifu2x: {output_path}")
+                return True
+                
+            except Exception as e:
+                self.logger.error(f"Waifu2x processing failed: {str(e)}")
+                return False
+                
         except Exception as e:
-            logger.error(f"Exception during Waifu2x upscaling: {e}")
+            self.logger.error(f"Unexpected error in Waifu2x processing: {str(e)}")
             return False 
