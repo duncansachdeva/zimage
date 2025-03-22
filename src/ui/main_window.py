@@ -48,12 +48,42 @@ def get_default_config():
 
 class Action:
     def __init__(self, name, params=None):
-        self.name = name
-        self.params = params or {}
+        self.name = name if name else ""
+        self.params = params if params is not None else {}
     
     def __str__(self):
-        param_str = ", ".join(f"{k}: {v}" for k, v in self.params.items())
-        return f"{self.name} ({param_str})" if self.params else self.name
+        try:
+            # Handle empty or None name
+            if not self.name:
+                return "Unnamed Action"
+                
+            # Handle empty or None params
+            if not self.params:
+                return self.name
+                
+            # Convert params to strings safely
+            param_pairs = []
+            for k, v in self.params.items():
+                try:
+                    # Skip None values
+                    if v is None:
+                        continue
+                    # Convert key and value to strings safely
+                    key_str = str(k) if k is not None else ""
+                    val_str = str(v) if v is not None else ""
+                    if key_str and val_str:  # Only add if both parts are non-empty
+                        param_pairs.append(f"{key_str}: {val_str}")
+                except Exception as param_err:
+                    logger.debug(f"Error converting parameter {k}: {param_err}")
+                    continue
+                    
+            # Join parameters if any exist
+            param_str = ", ".join(param_pairs)
+            return f"{self.name} ({param_str})" if param_str else self.name
+            
+        except Exception as e:
+            logger.error(f"Error converting action to string: {e}")
+            return self.name if self.name else "Unnamed Action"
         
     def to_dict(self):
         """Convert action to dictionary for saving"""
@@ -65,7 +95,7 @@ class Action:
     @classmethod
     def from_dict(cls, data):
         """Create action from dictionary"""
-        return cls(data['name'], data['params'])
+        return cls(data.get('name', ''), data.get('params', {}))
 
 class WorkerThread(QThread):
     """Worker thread for processing images"""
@@ -462,8 +492,8 @@ class MainWindow(QMainWindow):
             check = QCheckBox(action)
             self.action_checks.append(check)
             operations_layout.addWidget(check)
-            # Connect checkbox state change
-            check.stateChanged.connect(self.update_action_queue)
+            # Connect checkbox state change - only connect to setup_parameters
+            # update_action_queue will be called after parameter setup
             check.stateChanged.connect(self.setup_parameters)
         
         left_layout.addWidget(operations_group)
@@ -684,15 +714,17 @@ class MainWindow(QMainWindow):
                     default_params = {
                         'level': 'High'
                     }
-                    if hasattr(self, 'enhance_level_combo') and self.enhance_level_combo.isVisible():
-                        try:
-                            # Extract level from display text (e.g., "High (100)" -> "High")
-                            level_text = self.enhance_level_combo.currentText().split()[0]
-                            default_params.update({
-                                'level': level_text
-                            })
-                        except RuntimeError:
-                            logger.debug(f"Widget for {action_name} was deleted, using default values")
+                    if hasattr(self, 'enhance_level_combo'):
+                        combo = self.enhance_level_combo
+                        if combo and combo.isVisible() and not combo.parent().isHidden():
+                            try:
+                                # Extract level from display text (e.g., "High (100)" -> "High")
+                                level_text = combo.currentText().split()[0]
+                                default_params.update({
+                                    'level': level_text
+                                })
+                            except (RuntimeError, AttributeError):
+                                logger.debug(f"Widget for {action_name} was deleted or invalid, using default values")
                 
                 elif action_name == "PDF to Image":
                     default_params = {
@@ -701,16 +733,18 @@ class MainWindow(QMainWindow):
                         'quality': 95,
                         'color_mode': 'RGB'
                     }
-                    if hasattr(self, 'format_combo') and self.format_combo.isVisible():
+                    if all(hasattr(self, attr) for attr in ['format_combo', 'dpi_spin', 'quality_spin', 'color_combo']):
                         try:
-                            default_params.update({
-                                'format': self.format_combo.currentText().lower(),
-                                'dpi': self.dpi_spin.value(),
-                                'quality': self.quality_spin.value(),
-                                'color_mode': self.color_combo.currentText()
-                            })
-                        except RuntimeError:
-                            logger.debug(f"Widget for {action_name} was deleted, using default values")
+                            if (self.format_combo and self.format_combo.isVisible() and 
+                                not self.format_combo.parent().isHidden()):
+                                default_params.update({
+                                    'format': self.format_combo.currentText().lower(),
+                                    'dpi': self.dpi_spin.value(),
+                                    'quality': self.quality_spin.value(),
+                                    'color_mode': self.color_combo.currentText()
+                                })
+                        except (RuntimeError, AttributeError):
+                            logger.debug(f"Widget for {action_name} was deleted or invalid, using default values")
                         
                 elif action_name == "Image to PDF":
                     default_params = {
@@ -722,7 +756,8 @@ class MainWindow(QMainWindow):
                     }
                     if hasattr(self, 'combine_pdf_check'):
                         try:
-                            if self.combine_pdf_check.isVisible():
+                            if (self.combine_pdf_check and self.combine_pdf_check.isVisible() and 
+                                not self.combine_pdf_check.parent().isHidden()):
                                 default_params.update({
                                     'combine_files': self.combine_pdf_check.isChecked(),
                                     'orientation': self.orientation_combo.currentText(),
@@ -730,8 +765,8 @@ class MainWindow(QMainWindow):
                                     'fit_mode': self.fit_mode_combo.currentText(),
                                     'quality': self.pdf_quality_combo.currentText()
                                 })
-                        except RuntimeError:
-                            logger.debug(f"Widget for {action_name} was deleted, using default values")
+                        except (RuntimeError, AttributeError):
+                            logger.debug(f"Widget for {action_name} was deleted or invalid, using default values")
                         
                 elif action_name == "Resize Image":
                     default_params = {
@@ -741,14 +776,14 @@ class MainWindow(QMainWindow):
                     }
                     if hasattr(self, 'width_spin'):
                         try:
-                            if self.width_spin.isVisible():
+                            if self.width_spin and self.width_spin.isVisible() and not self.width_spin.parent().isHidden():
                                 default_params.update({
                                     'width': self.width_spin.value(),
                                     'height': self.height_spin.value(),
                                     'maintain_aspect': self.maintain_aspect_check.isChecked()
                                 })
-                        except RuntimeError:
-                            logger.debug(f"Widget for {action_name} was deleted, using default values")
+                        except (RuntimeError, AttributeError):
+                            logger.debug(f"Widget for {action_name} was deleted or invalid, using default values")
                         
                 elif action_name == "Reduce File Size":
                     default_params = {
@@ -756,29 +791,31 @@ class MainWindow(QMainWindow):
                     }
                     if hasattr(self, 'target_size_spin'):
                         try:
-                            if self.target_size_spin.isVisible():
+                            if (self.target_size_spin and self.target_size_spin.isVisible() and 
+                                not self.target_size_spin.parent().isHidden()):
                                 default_params.update({
                                     'target_size_mb': self.target_size_spin.value()
                                 })
-                        except RuntimeError:
-                            logger.debug(f"Widget for {action_name} was deleted, using default values")
+                        except (RuntimeError, AttributeError):
+                            logger.debug(f"Widget for {action_name} was deleted or invalid, using default values")
                         
                 elif action_name == "Upscale Image (Waifu2x)":
                     default_params = {
                         'scale': 2,
                         'noise': 1
                     }
-                    if hasattr(self, 'scale_factor_combo'):
+                    if all(hasattr(self, attr) for attr in ['scale_factor_combo', 'noise_level_combo']):
                         try:
-                            if self.scale_factor_combo.isVisible():
+                            if (self.scale_factor_combo and self.scale_factor_combo.isVisible() and 
+                                not self.scale_factor_combo.parent().isHidden()):
                                 scale_map = {"2x": 2, "4x": 4, "8x": 8}
                                 noise_map = {"None": 0, "Low": 1, "Medium": 2, "High": 3}
                                 default_params.update({
                                     'scale': scale_map[self.scale_factor_combo.currentText()],
                                     'noise': noise_map[self.noise_level_combo.currentText()]
                                 })
-                        except RuntimeError:
-                            logger.debug(f"Widget for {action_name} was deleted, using default values")
+                        except (RuntimeError, AttributeError):
+                            logger.debug(f"Widget for {action_name} was deleted or invalid, using default values")
                 
                 # Create action with parameters
                 action = Action(action_name)
@@ -796,10 +833,20 @@ class MainWindow(QMainWindow):
         
     def update_queue_display(self):
         """Update the queue list widget"""
-        self.queue_list.clear()
-        for action in self.actions_queue:
-            self.queue_list.addItem(str(action))
-            
+        try:
+            self.queue_list.clear()
+            for action in self.actions_queue:
+                try:
+                    display_text = str(action)
+                    self.queue_list.addItem(display_text)
+                except Exception as e:
+                    logger.error(f"Error displaying action: {e}")
+                    # Fallback to just displaying the action name
+                    self.queue_list.addItem(action.name)
+        except Exception as e:
+            logger.error(f"Error updating queue display: {e}")
+            self.queue_list.clear()  # Ensure the list is cleared even if there's an error
+
     def move_action_up(self):
         """Move selected action up in the queue"""
         current_row = self.queue_list.currentRow()
@@ -1075,7 +1122,7 @@ class MainWindow(QMainWindow):
     def setup_parameters(self):
         """Set up parameter widgets based on selected actions"""
         try:
-            # Disconnect all signals before clearing widgets
+            # Block signals during widget cleanup and setup
             for i in range(self.options_layout.count()):
                 widget = self.options_layout.itemAt(i).widget()
                 if widget:
@@ -1092,6 +1139,8 @@ class MainWindow(QMainWindow):
             # Create tab widget for parameters if there are selected actions
             selected_actions = [check for check in self.action_checks if check.isChecked()]
             if not selected_actions:
+                # If no actions selected, still update the queue to clear it
+                self.update_action_queue()
                 return
 
             self.tab_widget = QTabWidget()
@@ -1296,24 +1345,14 @@ class MainWindow(QMainWindow):
                 # Add the tab with a clean title
                 self.tab_widget.addTab(tab, check.text().replace(" (Waifu2x)", ""))
 
-            # Save current actions to config
+            # Save current actions to config and update queue immediately
             self.save_config()
-            
-            # Schedule the action queue update
-            QTimer.singleShot(50, self.delayed_update_queue)
+            self.update_action_queue()
 
         except Exception as e:
             logger.error(f"Error in setup_parameters: {e}")
-            QTimer.singleShot(50, self.delayed_update_queue)
-
-    def delayed_update_queue(self):
-        """Update the action queue after a short delay to ensure widget cleanup is complete"""
-        try:
+            # Ensure queue is updated even if there's an error
             self.update_action_queue()
-        except Exception as e:
-            logger.error(f"Error in delayed queue update: {e}")
-            # Ensure queue display is updated even if there's an error
-            self.update_queue_display()
 
     def start_batch_processing(self):
         # Open file dialog to select multiple images

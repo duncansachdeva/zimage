@@ -1,9 +1,6 @@
 {
     "output_dir": "D:/tmp/zimage-output",
     "last_actions": [
-        "Enhance Quality",
-        "Resize Image",
-        "Reduce File Size",
-        "Image to PDF"
+        "PDF to Image"
     ]
 }
