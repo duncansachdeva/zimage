@@ -263,26 +263,6 @@ class WorkerThread(QThread):
         """Cancel processing"""
         self._is_cancelled = True
 
-class BatchProcessingThread(QThread):
-    progress_update = pyqtSignal(int, int)  # emits (completed, total)
-    processing_finished = pyqtSignal(list)    # emits list of results
-    
-    def __init__(self, processor, files, actions, output_dir, naming_option, custom_suffix):
-        super().__init__()
-        self.processor = processor
-        self.files = files
-        self.actions = actions
-        self.output_dir = output_dir
-        self.naming_option = naming_option
-        self.custom_suffix = custom_suffix
-
-    def run(self):
-        results = self.processor.process_batch_parallel(
-            self.files, self.actions, self.output_dir, self.naming_option, self.custom_suffix,
-            progress_callback=self.progress_update.emit
-        )
-        self.processing_finished.emit(results)
-
 class MainWindow(QMainWindow):
     """Main window of the application."""
 
@@ -615,18 +595,6 @@ class MainWindow(QMainWindow):
         
         # Initial options update
         self.update_action_queue()
-        
-        # Add Batch Processing section
-        self.batch_process_button = QPushButton("Process Batch")
-        self.batch_process_button.clicked.connect(self.start_batch_processing)
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setValue(0)
-        self.progress_bar.hide()
-
-        batch_layout = QHBoxLayout()
-        batch_layout.addWidget(self.batch_process_button)
-        batch_layout.addWidget(self.progress_bar)
-        layout.addLayout(batch_layout)
         
     def update_preview(self, file_path: str):
         """Update the preview image"""
@@ -1353,56 +1321,6 @@ class MainWindow(QMainWindow):
             logger.error(f"Error in setup_parameters: {e}")
             # Ensure queue is updated even if there's an error
             self.update_action_queue()
-
-    def start_batch_processing(self):
-        # Open file dialog to select multiple images
-        files, _ = QFileDialog.getOpenFileNames(self, "Select Images for Batch Processing", "", "Images (*.png *.jpg *.jpeg *.bmp)")
-        if not files:
-            return
-        
-        # Retrieve actions from the current queue (assuming self.actions_queue is updated via update_action_queue)
-        if not hasattr(self, 'actions_queue') or not self.actions_queue:
-            self.update_status_info("No actions selected for processing.")
-            return
-        actions = self.actions_queue
-        
-        # Prompt for output directory
-        output_dir = QFileDialog.getExistingDirectory(self, "Select Output Directory")
-        if not output_dir:
-            return
-        
-        # Instantiate the OptimizedProcessor
-        self.image_processor = OptimizedProcessor()
-        
-        # Setup progress bar and disable the button during processing
-        self.progress_bar.setValue(0)
-        self.progress_bar.show()
-        self.batch_process_button.setEnabled(False)
-        
-        # Create and start the batch processing thread
-        self.batch_thread = BatchProcessingThread(self.image_processor, files, actions, output_dir, "default", "")
-        self.batch_thread.progress_update.connect(self.on_progress_update)
-        self.batch_thread.processing_finished.connect(self.on_processing_finished)
-        self.batch_thread.start()
-
-    def on_progress_update(self, completed, total):
-        progress = int((completed / total) * 100)
-        self.progress_bar.setValue(progress)
-        self.update_status_info(f"Processing: {completed}/{total}")
-
-    def on_processing_finished(self, results):
-        self.progress_bar.hide()
-        self.batch_process_button.setEnabled(True)
-        self.update_status_info("Batch processing completed.")
-        # Optionally, show a message box with summary
-        msg = QMessageBox()
-        msg.setWindowTitle("Processing Complete")
-        msg.setText(f"Processed {len(results)} files.")
-        msg.exec() 
-
-    def update_status_info(self, message):
-        """Update status information"""
-        self.file_progress_label.setText(message) 
 
     def update_resize_parameters(self):
         """Update both action parameters and previews for resize action"""
