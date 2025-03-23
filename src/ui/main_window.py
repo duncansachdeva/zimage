@@ -436,25 +436,6 @@ class MainWindow(QMainWindow):
         right_layout = QVBoxLayout(right_panel)
         
         # Left panel - Controls
-        # Drag & Drop Area
-        self.drop_area = QLabel("Drag and drop images here")
-        self.drop_area.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.drop_area.setStyleSheet("""
-            QLabel {
-                border: 2px dashed #aaa;
-                border-radius: 5px;
-                padding: 20px;
-                background: #f0f0f0;
-            }
-        """)
-        self.drop_area.setMinimumHeight(200)
-        left_layout.addWidget(self.drop_area)
-        
-        # Add Clear Files button below drop area
-        clear_files_btn = QPushButton("Clear Files")
-        clear_files_btn.clicked.connect(self.clear_files)
-        left_layout.addWidget(clear_files_btn)
-        
         # Operations Section
         operations_group = QWidget()
         operations_layout = QVBoxLayout(operations_group)
@@ -536,6 +517,25 @@ class MainWindow(QMainWindow):
         left_layout.addWidget(progress_widget)
         
         # Right panel - Preview
+        # Drag & Drop Area
+        self.drop_area = QLabel("Drag and drop images here")
+        self.drop_area.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.drop_area.setStyleSheet("""
+            QLabel {
+                border: 2px dashed #aaa;
+                border-radius: 5px;
+                padding: 20px;
+                background: #f0f0f0;
+            }
+        """)
+        self.drop_area.setMinimumHeight(200)
+        right_layout.addWidget(self.drop_area)
+        
+        # Add Clear Files button below drop area
+        clear_files_btn = QPushButton("Clear Files")
+        clear_files_btn.clicked.connect(self.clear_files)
+        right_layout.addWidget(clear_files_btn)
+        
         preview_label = QLabel("Preview")
         preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         right_layout.addWidget(preview_label)
