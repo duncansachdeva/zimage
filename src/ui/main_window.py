@@ -112,16 +112,15 @@ class WorkerThread(QThread):
             for action in self.actions:
                 self.action_progress.emit(f"Performing: {action.name}")
                 
-                # Special handling for PDF conversion with combine option
                 if action.name == "Image to PDF" and action.params.get('combine_files', False):
-                    # For combined PDF, create a single output file
-                    base_name = "combined_output.pdf"
-                    if self.naming_option == 'custom':
-                        base_name = f"combined_{self.custom_suffix}.pdf"
+                    # For combined PDF, create a single output file using proper naming
+                    base_name = os.path.join(self.output_dir, "combined")
+                    if self.naming_option == 'custom' and self.custom_suffix:
+                        base_name = os.path.join(self.output_dir, f"combined_{self.custom_suffix}")
                     elif self.naming_option == 'sequential':
-                        base_name = f"combined_1.pdf"
+                        base_name = os.path.join(self.output_dir, f"combined_1")
                     
-                    output_path = os.path.join(self.output_dir, base_name)
+                    output_path = f"{base_name}.pdf"
                     success = self.processor.convert_to_pdf(
                         current_files,
                         output_path,
@@ -165,7 +164,8 @@ class WorkerThread(QThread):
                                 input_path, output_path,
                                 naming_option=self.naming_option,
                                 custom_suffix=self.custom_suffix,
-                                file_index=i+1
+                                file_index=i+1,
+                                **action.params
                             )
                         elif action.name == "Resize Image":
                             success = self.processor.process_with_verification(
@@ -190,10 +190,13 @@ class WorkerThread(QThread):
                             pdf_output_dir = os.path.join(temp_dir if action != self.actions[-1] else self.output_dir, f"{name}_pages")
                             os.makedirs(pdf_output_dir, exist_ok=True)
                             
-                            # Convert PDF to images
+                            # Convert PDF to images with naming options
                             success = self.processor.pdf_to_image(
                                 input_path,
                                 pdf_output_dir,
+                                naming_option=self.naming_option,
+                                custom_suffix=self.custom_suffix,
+                                file_index=i + 1,
                                 **action.params
                             )
                             
@@ -207,15 +210,28 @@ class WorkerThread(QThread):
                                 ])
                                 continue
                         elif action.name == "Upscale Image (Waifu2x)":
-                            success = self.processor.upscale_image_waifu2x(
+                            success = self.processor.process_with_verification(
+                                self.processor.upscale_image_waifu2x,
                                 input_path, output_path,
+                                naming_option=self.naming_option,
+                                custom_suffix=self.custom_suffix,
+                                file_index=i+1,
                                 **action.params
                             )
                         elif action.name == "Image to PDF":
-                            success = self.processor.convert_to_pdf(
-                                [input_path],
-                                output_path,
-                                **action.params
+                            # Handle individual PDF conversion with naming options
+                            logger.debug(f"Worker thread Image to PDF: naming_option={self.naming_option}, custom_suffix={self.custom_suffix}, file_index={i+1}")
+                            
+                            # Combine action params with naming options
+                            pdf_params = {
+                                'naming_option': self.naming_option,
+                                'custom_suffix': self.custom_suffix,
+                                'file_index': i+1
+                            }
+                            
+                            success = self.processor.process_with_verification(
+                                lambda x, y: self.processor.convert_to_pdf([x], y, **action.params, **pdf_params),
+                                input_path, output_path
                             )
                         
                         if not success:

@@ -388,25 +388,32 @@ class ImageProcessor:
             logger.error(f"Failed to reduce file size: {e}")
             return False
             
-    def convert_to_pdf(self, image_paths: list, output_path: str, combine_files=False,
+    def convert_to_pdf(self, image_paths, output_path: str, combine_files=False,
                       orientation='Auto', images_per_page=1, fit_mode='Fit to page',
-                      quality='High') -> bool:
+                      quality='High', naming_option='same', custom_suffix='', file_index=None, **kwargs) -> bool:
         """Convert image(s) to PDF with enhanced options.
         
         Args:
-            image_paths: List of image paths to convert
+            image_paths: List or single path of image(s) to convert
             output_path: Path to save the PDF(s)
             combine_files: Whether to combine all images into one PDF
             orientation: Page orientation ('Auto', 'Portrait', 'Landscape')
             images_per_page: Number of images per page (1, 2, 4, or 6)
             fit_mode: How to fit images ('Fit to page', 'Stretch to fill', 'Actual size')
             quality: PDF quality ('High', 'Medium', 'Low')
+            naming_option: Naming option ('same', 'custom', 'sequential')
+            custom_suffix: Custom suffix for filenames
+            file_index: Index for sequential naming
+            **kwargs: Additional arguments passed from process_with_verification
             
         Returns:
             bool: True if successful, False otherwise
         """
         try:
-            # Ensure image_paths is a list of strings
+            # Log naming parameters
+            logger.debug(f"convert_to_pdf called with naming_option={naming_option}, custom_suffix={custom_suffix}, file_index={file_index}")
+            
+            # Handle single file input
             if isinstance(image_paths, str):
                 image_paths = [image_paths]
             
@@ -427,27 +434,54 @@ class ImageProcessor:
                 return self._create_combined_pdf(valid_images, output_path, orientation,
                                               images_per_page, fit_mode, quality)
             else:
-                return self._create_individual_pdfs(valid_images, output_path, orientation,
-                                                 images_per_page, fit_mode, quality)
+                # Extract naming parameters from kwargs if not explicitly provided
+                naming_option = kwargs.get('naming_option', naming_option)
+                custom_suffix = kwargs.get('custom_suffix', custom_suffix)
+                file_index = kwargs.get('file_index', file_index)
+                
+                logger.debug(f"Calling _create_individual_pdfs with naming_option={naming_option}, custom_suffix={custom_suffix}, file_index={file_index}")
+                
+                # For single file conversion, we only use the first image
+                return self._create_individual_pdfs([valid_images[0]], output_path, orientation,
+                                                 images_per_page, fit_mode, quality,
+                                                 naming_option=naming_option,
+                                                 custom_suffix=custom_suffix,
+                                                 file_index=file_index)
                 
         except Exception as e:
             logger.error(f"PDF conversion failed: {str(e)}")
             return False
             
     def _create_individual_pdfs(self, image_paths, output_base_path, orientation,
-                              images_per_page, fit_mode, quality):
+                              images_per_page, fit_mode, quality, 
+                              naming_option='same', custom_suffix='', file_index=None):
         """Create individual PDFs for each image."""
         try:
+            # Log received naming parameters
+            logger.debug(f"_create_individual_pdfs received naming_option={naming_option}, custom_suffix={custom_suffix}, file_index={file_index}")
+            
             success = True
             output_dir = os.path.dirname(output_base_path)
             
             # Ensure output directory exists
             os.makedirs(output_dir, exist_ok=True)
             
-            for image_path in image_paths:
-                # Generate output path
+            for i, image_path in enumerate(image_paths):
+                # Generate output path with naming options
                 filename = os.path.splitext(os.path.basename(image_path))[0]
-                pdf_path = os.path.join(output_dir, f"{filename}.pdf")
+                
+                # Apply naming options
+                if naming_option == 'same':
+                    new_name = filename
+                elif naming_option == 'custom' and custom_suffix:
+                    new_name = f"{filename}_{custom_suffix}"
+                elif naming_option == 'sequential' and file_index is not None:
+                    new_name = f"{filename}_{file_index}"
+                else:
+                    new_name = filename
+                
+                pdf_path = os.path.join(output_dir, f"{new_name}.pdf")
+                logger.debug(f"Generated PDF path with naming: {pdf_path}")
                 
                 # Create PDF for single image
                 pdf = FPDF()
@@ -584,7 +618,8 @@ class ImageProcessor:
             ]
             return layouts[:num_images]  # Return only needed layouts
             
-    def pdf_to_image(self, input_path: str, output_dir: str, format='png', dpi=300, quality=95, color_mode='RGB') -> bool:
+    def pdf_to_image(self, input_path: str, output_dir: str, format='png', dpi=300, quality=95, color_mode='RGB',
+                   naming_option: str = 'same', custom_suffix: str = '', file_index: int = None) -> bool:
         """Convert PDF to images.
         
         Args:
@@ -594,6 +629,9 @@ class ImageProcessor:
             dpi: DPI for output images
             quality: JPEG quality (1-100)
             color_mode: Color mode (RGB/RGBA)
+            naming_option: Naming option ('same', 'custom', 'sequential')
+            custom_suffix: Custom suffix for filenames
+            file_index: Index for sequential naming
             
         Returns:
             bool: True if successful, False otherwise
@@ -601,7 +639,7 @@ class ImageProcessor:
         try:
             # Ensure output directory exists
             os.makedirs(output_dir, exist_ok=True)
-            
+           
             # Get base name for output files
             pdf_name = os.path.splitext(os.path.basename(input_path))[0]
             
@@ -622,8 +660,18 @@ class ImageProcessor:
                 else:
                     pix = page.get_pixmap(matrix=matrix)
                 
-                # Generate output path directly in output directory
-                output_path = os.path.join(output_dir, f"{pdf_name}_page_{page_num + 1}.{format.lower()}")
+                # Generate output filename based on naming option
+                if naming_option == 'same':
+                    output_filename = f"{pdf_name}_page_{page_num + 1}"
+                elif naming_option == 'custom' and custom_suffix:
+                    output_filename = f"{pdf_name}_{custom_suffix}_page_{page_num + 1}"
+                elif naming_option == 'sequential' and file_index is not None:
+                    output_filename = f"{pdf_name}_{file_index}_page_{page_num + 1}"
+                else:
+                    output_filename = f"{pdf_name}_page_{page_num + 1}"
+                
+                # Generate output path
+                output_path = os.path.join(output_dir, f"{output_filename}.{format.lower()}")
                 
                 # Save image based on format
                 if format.lower() == 'png':
