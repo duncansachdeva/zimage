@@ -2,9 +2,12 @@ from PIL import Image
 import os
 import shutil
 from loguru import logger
-from typing import Tuple, Optional, Union
+from typing import Optional
+from fpdf import FPDF
 import img2pdf
-from pdf2image import convert_from_path
+import fitz  # PyMuPDF
+from io import BytesIO
+from PyQt6.QtGui import QImage
 
 class ImageProcessor:
     """
@@ -12,8 +15,13 @@ class ImageProcessor:
     """
     
     def __init__(self):
-        logger.info("Initializing ImageProcessor")
-        self.supported_formats = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff'}
+        """Initialize the image processor."""
+        self.logger = logger
+        self.logger.info("Initializing ImageProcessor")
+        self.supported_formats = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.pdf'}
+        # Letter size in inches converted to points (1 inch = 72 points)
+        self.page_width = 8.5 * 72
+        self.page_height = 11 * 72
         
     def verify_disk_space(self, input_path: str, output_path: str, factor: float = 1.5) -> bool:
         """Verify if there's enough disk space for the operation"""
@@ -36,20 +44,21 @@ class ImageProcessor:
     def generate_output_path(self, input_path: str, output_dir: str, 
                            naming_option: str = 'same', 
                            custom_suffix: str = '',
-                           sequence_number: int = None) -> str:
+                           file_index: int = None) -> str:
         """Generate output path based on naming options"""
         try:
             # Get just the filename from the input path
             filename = os.path.basename(input_path)
             name, ext = os.path.splitext(filename)
             
-            # Generate new filename based on naming option
+            # For 'same' naming option, use the original filename as is
             if naming_option == 'same':
                 new_name = filename
-            elif naming_option == 'custom':
+            # For custom suffix or sequential, add to the original name
+            elif naming_option == 'custom' and custom_suffix:
                 new_name = f"{name}_{custom_suffix}{ext}"
-            elif naming_option == 'sequential':
-                new_name = f"{name}_{sequence_number}{ext}"
+            elif naming_option == 'sequential' and file_index is not None:
+                new_name = f"{name}_{file_index}{ext}"
             else:
                 new_name = filename
                 
@@ -65,196 +74,732 @@ class ImageProcessor:
             logger.error(f"Output path generation failed: {str(e)}")
             return None
 
-    def validate_image(self, image_path: str) -> bool:
-        """Validate if file is an image and exists"""
+    def validate_file(self, file_path: str) -> bool:
+        """Validate if file is an image/PDF and exists"""
         try:
-            if not os.path.exists(image_path):
-                logger.error(f"File not found: {image_path}")
+            if not os.path.exists(file_path):
+                logger.error(f"File not found: {file_path}")
                 return False
             
-            ext = os.path.splitext(image_path)[1].lower()
+            ext = os.path.splitext(file_path)[1].lower()
             if ext not in self.supported_formats:
                 logger.error(f"Unsupported format: {ext}")
                 return False
                 
-            # Try opening the image to verify it's valid
-            with Image.open(image_path) as img:
+            # PDF-specific validation
+            if ext == '.pdf':
+                try:
+                    doc = fitz.open(file_path)
+                    is_valid = doc.page_count > 0
+                    doc.close()
+                    if not is_valid:
+                        logger.error(f"Invalid PDF file: {file_path}")
+                        return False
+                    return True
+                except Exception as e:
+                    logger.error(f"PDF validation failed: {str(e)}")
+                    return False
+            
+            # Image validation for non-PDF files
+            with Image.open(file_path) as img:
                 img.verify()
             return True
         except Exception as e:
-            logger.error(f"Image validation failed: {str(e)}")
+            logger.error(f"File validation failed: {str(e)}")
             return False
-            
-    def enhance_quality(self, image_path: str, output_path: str) -> bool:
-        """Enhance image quality to 100%"""
+
+    def get_pdf_info(self, pdf_path: str) -> dict:
+        """Get PDF file information"""
         try:
+            doc = fitz.open(pdf_path)
+            file_size = os.path.getsize(pdf_path) / (1024 * 1024)  # Convert to MB
+            
+            info = {
+                'page_count': len(doc),
+                'file_size': f"{file_size:.2f} MB",
+                'dimensions': [],
+                'current_page': 1
+            }
+            
+            # Get dimensions of each page
+            for page in doc:
+                rect = page.rect
+                info['dimensions'].append({
+                    'width': int(rect.width),
+                    'height': int(rect.height)
+                })
+            
+            doc.close()
+            return info
+        except Exception as e:
+            logger.error(f"Failed to get PDF info: {str(e)}")
+            return None
+
+    def get_pdf_page_preview(self, pdf_path: str, page_number: int, zoom: float = 1.0) -> tuple:
+        """Get preview image for a specific PDF page
+        
+        Returns:
+            tuple: (QImage, page_dimensions) or (None, None) on failure
+        """
+        try:
+            doc = fitz.open(pdf_path)
+            if 0 <= page_number < len(doc):
+                page = doc[page_number]
+                matrix = fitz.Matrix(zoom, zoom)
+                pix = page.get_pixmap(matrix=matrix)
+                
+                # Convert to QImage
+                img_data = pix.samples
+                qimg = QImage(img_data, pix.width, pix.height, pix.stride, QImage.Format.Format_RGB888)
+                
+                # Get page dimensions
+                dimensions = {
+                    'width': int(page.rect.width),
+                    'height': int(page.rect.height)
+                }
+                
+                doc.close()
+                return qimg, dimensions
+                
+            doc.close()
+            return None, None
+        except Exception as e:
+            logger.error(f"Failed to get PDF page preview: {str(e)}")
+            return None, None
+
+    def estimate_output_size(self, pdf_dimensions: dict, dpi: int, format: str, quality: int = 95) -> float:
+        """Estimate output file size based on parameters"""
+        try:
+            # Calculate pixel dimensions
+            width_px = int(pdf_dimensions['width'] * dpi / 72)
+            height_px = int(pdf_dimensions['height'] * dpi / 72)
+            
+            # Base size (uncompressed RGB)
+            base_size = width_px * height_px * 3  # 3 bytes per pixel for RGB
+            
+            # Apply format-specific compression estimates
+            if format.lower() == 'png':
+                # PNG typically achieves 5:1 to 8:1 compression for natural images
+                estimated_size = base_size / 6  # Using average compression ratio
+            elif format.lower() == 'jpg':
+                # JPEG compression based on quality
+                compression_ratio = 20 + (80 * quality / 100)  # Higher quality = less compression
+                estimated_size = base_size * (quality / compression_ratio)
+            else:  # TIFF
+                # TIFF with LZW typically achieves 2:1 to 3:1 compression
+                estimated_size = base_size / 2.5
+            
+            # Convert to MB
+            return estimated_size / (1024 * 1024)
+        except Exception as e:
+            logger.error(f"Failed to estimate output size: {str(e)}")
+            return 0.0
+
+    def enhance_quality(self, image_path: str, output_path: str, level='High') -> bool:
+        """Enhance image quality based on level.
+        
+        Args:
+            image_path: Input image path
+            output_path: Output path
+            level: Enhancement level ('Low', 'Medium', 'High')
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        try:
+            # Quality mapping for each level
+            quality_map = {
+                'High': 100,
+                'Medium': 92,
+                'Low': 85
+            }
+            quality = quality_map.get(level, 100)  # Default to High if invalid level
+            
             with Image.open(image_path) as img:
-                img.save(output_path, quality=100, optimize=True)
-            logger.info(f"Enhanced quality for: {image_path}")
+                # Convert to RGB if necessary
+                if img.mode in ('RGBA', 'P'):
+                    img = img.convert('RGB')
+                    
+                # Save with specified quality and optimization
+                img.save(output_path, quality=quality, optimize=True)
+                
+            logger.info(f"Enhanced quality for: {image_path} with level: {level} (Quality: {quality}%)")
             return True
         except Exception as e:
             logger.error(f"Quality enhancement failed: {str(e)}")
             return False
             
-    def resize_image(self, image_path: str, output_path: str, 
-                    target_size: Optional[Tuple[int, int]] = None,
-                    scale_factor: Optional[float] = None) -> bool:
-        """Resize image maintaining aspect ratio"""
-        try:
-            with Image.open(image_path) as img:
-                if target_size:
-                    target_width, target_height = target_size
-                    # Get the longer side
-                    if img.width >= img.height:
-                        # Width is longer, set it to target width
-                        ratio = target_width / img.width
-                        new_size = (target_width, int(img.height * ratio))
-                    else:
-                        # Height is longer, set it to target width
-                        ratio = target_width / img.height
-                        new_size = (int(img.width * ratio), target_width)
-                    
-                    img = img.resize(new_size, Image.Resampling.LANCZOS)
-                elif scale_factor:
-                    new_size = (int(img.width * scale_factor), 
-                              int(img.height * scale_factor))
-                    img = img.resize(new_size, Image.Resampling.LANCZOS)
-                
-                # Save with high quality and optimization
-                img.save(output_path, quality=95, optimize=True)
-                logger.info(f"Resized image: {image_path} to {new_size}")
-                return True
-        except Exception as e:
-            logger.error(f"Resize failed: {str(e)}")
-            return False
-            
-    def reduce_file_size(self, image_path: str, output_path: str, 
-                        target_size: str) -> bool:
-        """Reduce file size to target size (small, medium, large)"""
-        size_map = {
-            'small': 300 * 1024,  # 300KB
-            'medium': 800 * 1024,  # 800KB
-            'large': 2 * 1024 * 1024  # 2MB
-        }
+    def resize_image(self, input_path, output_path, width=None, height=None, maintain_aspect=True):
+        """Resize an image to the specified dimensions.
         
+        Args:
+            input_path (str): Path to input image
+            output_path (str): Path to save resized image
+            width (int, optional): Target width. Defaults to None.
+            height (int, optional): Target height. Defaults to None.
+            maintain_aspect (bool, optional): Whether to maintain aspect ratio. Defaults to True.
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
         try:
-            target_bytes = size_map.get(target_size.lower())
-            if not target_bytes:
-                raise ValueError(f"Invalid target size: {target_size}")
+            with Image.open(input_path) as img:
+                # Convert to RGB if needed
+                if img.mode not in ('RGB', 'RGBA'):
+                    img = img.convert('RGB')
                 
-            quality = 95
-            with Image.open(image_path) as img:
-                while True:
-                    img.save(output_path, quality=quality, optimize=True)
-                    if os.path.getsize(output_path) <= target_bytes or quality <= 5:
-                        break
-                    quality -= 5
-                    
-            logger.info(f"Reduced file size for: {image_path}")
-            return True
-        except Exception as e:
-            logger.error(f"File size reduction failed: {str(e)}")
-            return False
-            
-    def rotate_image(self, image_path: str, output_path: str, 
-                    degrees: int) -> bool:
-        """Rotate image by specified degrees"""
-        try:
-            with Image.open(image_path) as img:
-                rotated = img.rotate(degrees, expand=True)
-                rotated.save(output_path, quality=95, optimize=True)
-            logger.info(f"Rotated image: {image_path}")
-            return True
-        except Exception as e:
-            logger.error(f"Rotation failed: {str(e)}")
-            return False
-            
-    def add_watermark(self, image_path: str, output_path: str,
-                     watermark: Union[str, Image.Image],
-                     position: Tuple[int, int] = None) -> bool:
-        """Add watermark (text or image) to image"""
-        try:
-            with Image.open(image_path) as base_img:
-                if isinstance(watermark, str):
-                    # Create text watermark
-                    txt_layer = Image.new('RGBA', base_img.size, (255, 255, 255, 0))
-                    # Implementation of text drawing will go here
-                    base_img.paste(txt_layer, (0, 0), txt_layer)
+                # Get original dimensions
+                orig_width, orig_height = img.size
+                
+                # Calculate new dimensions
+                if width and height and not maintain_aspect:
+                    new_width = width
+                    new_height = height
+                elif width:
+                    # Scale height proportionally
+                    scale = width / orig_width
+                    new_width = width
+                    new_height = int(orig_height * scale)
+                elif height:
+                    # Scale width proportionally
+                    scale = height / orig_height
+                    new_width = int(orig_width * scale)
+                    new_height = height
                 else:
-                    # Image watermark
-                    if position is None:
-                        position = (base_img.width - watermark.width - 10,
-                                  base_img.height - watermark.height - 10)
-                    base_img.paste(watermark, position, watermark)
-                base_img.save(output_path, quality=95, optimize=True)
-            logger.info(f"Added watermark to: {image_path}")
-            return True
+                    # No dimensions specified, use original
+                    new_width = orig_width
+                    new_height = orig_height
+                
+                # Resize image
+                resized = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+                
+                # Save resized image
+                resized.save(output_path, quality=95, optimize=True)
+                
+                self.logger.info(f"Resized image saved: {output_path} ({new_width}x{new_height})")
+                return True
+                
         except Exception as e:
-            logger.error(f"Watermark addition failed: {str(e)}")
+            self.logger.error(f"Failed to resize image: {str(e)}")
             return False
             
-    def convert_to_pdf(self, image_paths: list, output_path: str) -> bool:
-        """Convert image(s) to PDF"""
+    def reduce_file_size(self, input_path, output_path, target_size_mb, quality_priority=0.7):
+        """Reduce file size to target size in MB while maintaining quality based on priority.
+        
+        Args:
+            input_path (str): Path to input image
+            output_path (str): Path to save reduced image
+            target_size_mb (float): Target file size in megabytes
+            quality_priority (float): Priority for quality vs size (0.0-1.0, higher means prefer quality)
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
         try:
-            with open(output_path, "wb") as f:
-                f.write(img2pdf.convert([image_path for image_path in image_paths
-                                       if self.validate_image(image_path)]))
-            logger.info(f"Converted images to PDF: {output_path}")
-            return True
+            # Get original file size and extension
+            original_size = os.path.getsize(input_path) / (1024 * 1024)  # Convert to MB
+            original_ext = os.path.splitext(input_path)[1].lower()
+            
+            with Image.open(input_path) as img:
+                # Convert to RGB if necessary
+                if img.mode in ('RGBA', 'P'):
+                    img = img.convert('RGB')
+                
+                # If original is already smaller, still process through PIL but with max quality
+                if original_size <= target_size_mb:
+                    logger.info(f"File already smaller than target size: {original_size:.1f}MB <= {target_size_mb:.1f}MB")
+                    # Save with maximum quality but still optimize
+                    img.save(output_path, format='JPEG', quality=95, optimize=True)
+                    return True
+                
+                # Calculate initial quality based on size ratio and quality priority
+                base_quality = (target_size_mb / original_size) * 100
+                quality = min(95, max(5, int(base_quality + (95 - base_quality) * quality_priority)))
+                
+                max_attempts = 15  # Increased attempts for better accuracy
+                attempt = 0
+                best_result = {'quality': quality, 'size': float('inf'), 'diff': float('inf')}
+                
+                while attempt < max_attempts:
+                    # Create a temporary buffer for size testing
+                    temp_buffer = BytesIO()
+                    img.save(temp_buffer, format='JPEG', quality=quality, optimize=True)
+                    result_size = len(temp_buffer.getvalue()) / (1024 * 1024)  # Convert to MB
+                    
+                    # Calculate how far we are from target
+                    size_diff = abs(result_size - target_size_mb)
+                    
+                    # Update best result if this is closer to target and not exceeding it by much
+                    # Consider quality priority in the decision
+                    quality_weight = 1 + quality_priority  # Higher priority means we accept slightly larger files
+                    if size_diff < best_result['diff'] and (result_size <= target_size_mb * quality_weight):
+                        best_result = {
+                            'quality': quality,
+                            'size': result_size,
+                            'diff': size_diff,
+                            'data': temp_buffer.getvalue()  # Store the actual data
+                        }
+                    
+                    # If we're within acceptable range based on quality priority, we're done
+                    acceptable_margin = 0.02 + (quality_priority * 0.03)  # Higher priority allows more margin
+                    if abs(result_size - target_size_mb) / target_size_mb <= acceptable_margin:
+                        with open(output_path, 'wb') as f:
+                            f.write(temp_buffer.getvalue())
+                        logger.info(f"Reduced file size: {output_path} "
+                                  f"(Original: {original_size:.1f}MB, "
+                                  f"Target: {target_size_mb:.1f}MB, "
+                                  f"Final: {result_size:.1f}MB, "
+                                  f"Quality: {quality}%)")
+                        return True
+                    
+                    # Adjust quality based on how far we are from target and quality priority
+                    if result_size > target_size_mb:
+                        # If we're too big, reduce quality (less aggressive with high priority)
+                        reduction_factor = 1 - (quality_priority * 0.5)  # Higher priority means smaller reductions
+                        quality_change = max(1, int(quality * (result_size - target_size_mb) / target_size_mb * reduction_factor))
+                        quality = max(5, quality - quality_change)
+                    else:
+                        # If we're too small, increase quality (more aggressive with high priority)
+                        increase_factor = 1 + (quality_priority * 0.5)  # Higher priority means larger increases
+                        quality_change = max(1, int(quality * (target_size_mb - result_size) / target_size_mb * increase_factor))
+                        quality = min(95, quality + quality_change)
+                    
+                    attempt += 1
+                
+                # Use the best result we found
+                if 'data' in best_result:
+                    with open(output_path, 'wb') as f:
+                        f.write(best_result['data'])
+                    logger.info(f"Using best result: {output_path} "
+                              f"(Original: {original_size:.1f}MB, "
+                              f"Target: {target_size_mb:.1f}MB, "
+                              f"Final: {best_result['size']:.1f}MB, "
+                              f"Quality: {best_result['quality']}%)")
+                    return True
+                else:
+                    # If we couldn't find a good result, use the last attempt
+                    img.save(output_path, format='JPEG', quality=quality, optimize=True)
+                    logger.warning(f"Could not achieve target size after {max_attempts} attempts. "
+                                 f"Final size: {result_size:.1f}MB "
+                                 f"(Target: {target_size_mb:.1f}MB, Quality: {quality}%)")
+                    return True
+                
+        except Exception as e:
+            logger.error(f"Failed to reduce file size: {e}")
+            return False
+            
+    def convert_to_pdf(self, image_paths, output_path: str, combine_files=False,
+                      orientation='Auto', images_per_page=1, fit_mode='Fit to page',
+                      quality='High', naming_option='same', custom_suffix='', file_index=None, **kwargs) -> bool:
+        """Convert image(s) to PDF with enhanced options.
+        
+        Args:
+            image_paths: List or single path of image(s) to convert
+            output_path: Path to save the PDF(s)
+            combine_files: Whether to combine all images into one PDF
+            orientation: Page orientation ('Auto', 'Portrait', 'Landscape')
+            images_per_page: Number of images per page (1, 2, 4, or 6)
+            fit_mode: How to fit images ('Fit to page', 'Stretch to fill', 'Actual size')
+            quality: PDF quality ('High', 'Medium', 'Low')
+            naming_option: Naming option ('same', 'custom', 'sequential')
+            custom_suffix: Custom suffix for filenames
+            file_index: Index for sequential naming
+            **kwargs: Additional arguments passed from process_with_verification
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        try:
+            # Log naming parameters
+            logger.debug(f"convert_to_pdf called with naming_option={naming_option}, custom_suffix={custom_suffix}, file_index={file_index}")
+            
+            # Handle single file input
+            if isinstance(image_paths, str):
+                image_paths = [image_paths]
+            
+            # Validate images first
+            valid_images = []
+            for img_path in image_paths:
+                if self.validate_file(str(img_path)):
+                    valid_images.append(str(img_path))
+            
+            if not valid_images:
+                logger.error("No valid images to convert")
+                return False
+            
+            # Ensure output directory exists
+            os.makedirs(os.path.dirname(output_path), exist_ok=True)
+                
+            if combine_files:
+                return self._create_combined_pdf(valid_images, output_path, orientation,
+                                              images_per_page, fit_mode, quality)
+            else:
+                # Extract naming parameters from kwargs if not explicitly provided
+                naming_option = kwargs.get('naming_option', naming_option)
+                custom_suffix = kwargs.get('custom_suffix', custom_suffix)
+                file_index = kwargs.get('file_index', file_index)
+                
+                logger.debug(f"Calling _create_individual_pdfs with naming_option={naming_option}, custom_suffix={custom_suffix}, file_index={file_index}")
+                
+                # For single file conversion, we only use the first image
+                return self._create_individual_pdfs([valid_images[0]], output_path, orientation,
+                                                 images_per_page, fit_mode, quality,
+                                                 naming_option=naming_option,
+                                                 custom_suffix=custom_suffix,
+                                                 file_index=file_index)
+                
         except Exception as e:
             logger.error(f"PDF conversion failed: {str(e)}")
             return False
             
-    def convert_from_pdf(self, pdf_path: str, output_dir: str) -> bool:
-        """Convert PDF to images"""
+    def _create_individual_pdfs(self, image_paths, output_base_path, orientation,
+                              images_per_page, fit_mode, quality, 
+                              naming_option='same', custom_suffix='', file_index=None):
+        """Create individual PDFs for each image."""
         try:
-            images = convert_from_path(pdf_path)
-            for i, image in enumerate(images):
-                image.save(os.path.join(output_dir, f'page_{i+1}.png'), 'PNG')
-            logger.info(f"Converted PDF to images: {pdf_path}")
+            # Log received naming parameters
+            logger.debug(f"_create_individual_pdfs received naming_option={naming_option}, custom_suffix={custom_suffix}, file_index={file_index}")
+            
+            success = True
+            output_dir = os.path.dirname(output_base_path)
+            
+            # Ensure output directory exists
+            os.makedirs(output_dir, exist_ok=True)
+            
+            for i, image_path in enumerate(image_paths):
+                # Generate output path with naming options
+                filename = os.path.splitext(os.path.basename(image_path))[0]
+                
+                # Apply naming options
+                if naming_option == 'same':
+                    new_name = filename
+                elif naming_option == 'custom' and custom_suffix:
+                    new_name = f"{filename}_{custom_suffix}"
+                elif naming_option == 'sequential' and file_index is not None:
+                    new_name = f"{filename}_{file_index}"
+                else:
+                    new_name = filename
+                
+                pdf_path = os.path.join(output_dir, f"{new_name}.pdf")
+                logger.debug(f"Generated PDF path with naming: {pdf_path}")
+                
+                # Create PDF for single image
+                pdf = FPDF()
+                pdf.set_auto_page_break(auto=True, margin=15)
+                self._add_images_to_page(pdf, [image_path], orientation, fit_mode, quality)
+                pdf.output(pdf_path)
+                logger.info(f"Created individual PDF: {pdf_path}")
+            
+            return success
+            
+        except Exception as e:
+            logger.error(f"Failed to create individual PDFs: {str(e)}")
+            return False
+            
+    def _create_combined_pdf(self, image_paths, output_path, orientation,
+                           images_per_page, fit_mode, quality):
+        """Create a single PDF containing all images."""
+        try:
+            # Ensure output path has .pdf extension
+            if not output_path.lower().endswith('.pdf'):
+                output_path = os.path.splitext(output_path)[0] + '.pdf'
+            
+            # Create PDF
+            pdf = FPDF()
+            pdf.set_auto_page_break(auto=True, margin=15)
+            
+            # Process images in batches based on images_per_page
+            images_per_page = int(images_per_page)  # Ensure it's an integer
+            total_images = len(image_paths)
+            
+            for i in range(0, total_images, images_per_page):
+                # Get current batch of images
+                batch = image_paths[i:i + images_per_page]
+                self._add_images_to_page(pdf, batch, orientation, fit_mode, quality)
+                logger.info(f"Added page {i // images_per_page + 1} with {len(batch)} images")
+            
+            # Save the PDF
+            pdf.output(output_path)
+            logger.info(f"Created combined PDF: {output_path}")
             return True
+            
+        except Exception as e:
+            logger.error(f"Failed to create combined PDF: {str(e)}")
+            return False
+
+    def _add_images_to_page(self, pdf, image_paths, orientation, fit_mode, quality):
+        """Add a batch of images to a single PDF page with dynamic layout."""
+        try:
+            # Determine page orientation based on first image if Auto
+            first_image = Image.open(image_paths[0])
+            auto_orientation = first_image.width > first_image.height
+            first_image.close()
+            
+            if orientation == 'Auto':
+                pdf.add_page('L' if auto_orientation else 'P')
+            else:
+                pdf.add_page('L' if orientation == 'Landscape' else 'P')
+            
+            # Get number of images for this page
+            num_images = len(image_paths)
+            
+            # Calculate layout based on number of images
+            layouts = self._calculate_layout(num_images)
+            
+            # Add images to page
+            for image_path, layout in zip(image_paths, layouts):
+                x1, y1, x2, y2 = layout
+                with Image.open(image_path) as img:
+                    # Calculate dimensions based on fit mode
+                    if fit_mode == 'Stretch to fill':
+                        w = (x2 - x1) * pdf.w
+                        h = (y2 - y1) * pdf.h
+                    elif fit_mode == 'Actual size':
+                        w = min((x2 - x1) * pdf.w, img.width)
+                        h = min((y2 - y1) * pdf.h, img.height)
+                    else:  # Fit to page
+                        rect_w = (x2 - x1) * pdf.w
+                        rect_h = (y2 - y1) * pdf.h
+                        img_ratio = img.width / img.height
+                        rect_ratio = rect_w / rect_h
+                        
+                        if img_ratio > rect_ratio:
+                            w = rect_w
+                            h = rect_w / img_ratio
+                        else:
+                            h = rect_h
+                            w = rect_h * img_ratio
+                    
+                    # Calculate position to center image in its cell
+                    x = x1 * pdf.w + ((x2 - x1) * pdf.w - w) / 2
+                    y = y1 * pdf.h + ((y2 - y1) * pdf.h - h) / 2
+                    
+                    # Convert quality setting to compression level
+                    if quality == 'High':
+                        compress = False
+                    elif quality == 'Medium':
+                        compress = True
+                    else:  # Low
+                        compress = True
+                        w = w * 0.75  # Reduce image size for low quality
+                        h = h * 0.75
+                    
+                    # Add image to PDF
+                    pdf.image(image_path, x, y, w, h)
+                    
+        except Exception as e:
+            logger.error(f"Failed to add images to page: {str(e)}")
+            raise  # Re-raise to be caught by calling function
+
+    def _calculate_layout(self, num_images):
+        """Calculate layout coordinates for the given number of images."""
+        if num_images == 1:
+            return [(0, 0, 1, 1)]
+        elif num_images == 2:
+            return [(0, 0, 0.5, 1), (0.5, 0, 1, 1)]
+        elif num_images <= 4:
+            # 2x2 grid
+            layouts = [
+                (0, 0, 0.5, 0.5),     # Top-left
+                (0.5, 0, 1, 0.5),     # Top-right
+                (0, 0.5, 0.5, 1),     # Bottom-left
+                (0.5, 0.5, 1, 1)      # Bottom-right
+            ]
+            return layouts[:num_images]  # Return only needed layouts
+        else:
+            # 3x2 grid (up to 6 images)
+            layouts = [
+                (0, 0, 0.33, 0.5),      # Top-left
+                (0.33, 0, 0.66, 0.5),   # Top-middle
+                (0.66, 0, 1, 0.5),      # Top-right
+                (0, 0.5, 0.33, 1),      # Bottom-left
+                (0.33, 0.5, 0.66, 1),   # Bottom-middle
+                (0.66, 0.5, 1, 1)       # Bottom-right
+            ]
+            return layouts[:num_images]  # Return only needed layouts
+            
+    def pdf_to_image(self, input_path: str, output_dir: str, format='png', dpi=300, quality=95, color_mode='RGB',
+                   naming_option: str = 'same', custom_suffix: str = '', file_index: int = None) -> bool:
+        """Convert PDF to images.
+        
+        Args:
+            input_path: Path to input PDF
+            output_dir: Directory to save images
+            format: Output format (png, jpg, tiff)
+            dpi: DPI for output images
+            quality: JPEG quality (1-100)
+            color_mode: Color mode (RGB/RGBA)
+            naming_option: Naming option ('same', 'custom', 'sequential')
+            custom_suffix: Custom suffix for filenames
+            file_index: Index for sequential naming
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        try:
+            # Ensure output directory exists
+            os.makedirs(output_dir, exist_ok=True)
+           
+            # Get base name for output files
+            pdf_name = os.path.splitext(os.path.basename(input_path))[0]
+            
+            # Open PDF
+            doc = fitz.open(input_path)
+            total_pages = doc.page_count
+            
+            for page_num in range(total_pages):
+                page = doc[page_num]
+                
+                # Calculate zoom factor based on DPI
+                zoom = dpi / 72.0  # PDF standard DPI is 72
+                matrix = fitz.Matrix(zoom, zoom)
+                
+                # Get page pixmap
+                if color_mode == 'RGBA':
+                    pix = page.get_pixmap(matrix=matrix, alpha=True)
+                else:
+                    pix = page.get_pixmap(matrix=matrix)
+                
+                # Generate output filename based on naming option
+                if naming_option == 'same':
+                    output_filename = f"{pdf_name}_page_{page_num + 1}"
+                elif naming_option == 'custom' and custom_suffix:
+                    output_filename = f"{pdf_name}_{custom_suffix}_page_{page_num + 1}"
+                elif naming_option == 'sequential' and file_index is not None:
+                    output_filename = f"{pdf_name}_{file_index}_page_{page_num + 1}"
+                else:
+                    output_filename = f"{pdf_name}_page_{page_num + 1}"
+                
+                # Generate output path
+                output_path = os.path.join(output_dir, f"{output_filename}.{format.lower()}")
+                
+                # Save image based on format
+                if format.lower() == 'png':
+                    pix.save(output_path)
+                else:
+                    # Convert to PIL Image for other formats
+                    img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+                    if color_mode == 'RGBA' and pix.alpha:
+                        alpha = Image.frombytes("L", [pix.width, pix.height], pix.alpha)
+                        img.putalpha(alpha)
+                    
+                    save_opts = {'quality': quality} if format.lower() == 'jpg' else {}
+                    img.save(output_path, format=format.upper(), **save_opts)
+                
+                logger.info(f"Converted page {page_num + 1}/{total_pages} to {output_path}")
+            
+            doc.close()
+            logger.info(f"Successfully converted PDF to {total_pages} images in {output_dir}")
+            return True
+            
         except Exception as e:
             logger.error(f"PDF to image conversion failed: {str(e)}")
             return False
 
-    def process_with_verification(self, operation_func, input_path: str, 
-                                output_path: str, **kwargs) -> bool:
-        """Process file with disk space verification"""
+    def process_with_verification(self, process_func, input_path: str, output_path: str, 
+                                  naming_option: str = 'same', custom_suffix: str = '',
+                                  file_index: int = None, **kwargs) -> bool:
+        """Process a file with verification of input and output"""
         try:
-            if not self.verify_disk_space(input_path, output_path):
+            # Verify input file exists and is readable
+            if not os.path.isfile(input_path):
+                logger.error(f"Input file does not exist: {input_path}")
                 return False
-            return operation_func(input_path, output_path, **kwargs)
+                
+            # For temporary files, use the original name first
+            if '.temp' in output_path:
+                final_output_path = output_path
+            else:
+                # Generate proper output path with naming convention for final output
+                output_dir = os.path.dirname(output_path)
+                final_output_path = self.generate_output_path(
+                    input_path, output_dir, 
+                    naming_option=naming_option,
+                    custom_suffix=custom_suffix,
+                    file_index=file_index
+                )
+                
+                if not final_output_path:
+                    logger.error("Failed to generate output path")
+                    return False
+                
+            # Verify disk space
+            if not self.verify_disk_space(input_path, final_output_path):
+                return False
+            
+            # Process the file
+            return process_func(input_path, final_output_path, **kwargs)
+            
         except Exception as e:
             logger.error(f"Processing failed: {str(e)}")
             return False
 
-    def upscale_image_waifu2x(self, image_path: str, output_path: str, scale: float = 2.0, noise: int = 1) -> bool:
-        """Upscale an image using the waifu2x-converter-cpp command-line tool.
-
-        Parameters:
-          image_path: Path to the input image.
-          output_path: Path where the upscaled image will be saved.
-          scale: Scaling factor (default 2.0).
-          noise: Noise reduction level (default 1).
-
-        Returns:
-          True if the operation is successful, False otherwise.
+    def upscale_image_waifu2x(self, image_path: str, output_path: str, scale_factor: int = 2, 
+                             noise_level: int = 1, model_type: str = 'auto') -> bool:
         """
-        import subprocess
+        Enhance image using Waifu2x algorithm.
+        
+        Args:
+            image_path (str): Path to input image
+            output_path (str): Path to save enhanced image
+            scale_factor (int): Upscaling factor (1, 2, or 4)
+            noise_level (int): Noise reduction level (0-3)
+            model_type (str): Model type to use ('photo', 'anime', or 'auto')
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
         try:
-            command = [
-                'waifu2x-converter-cpp',
-                '-i', image_path,
-                '-o', output_path,
-                '-s', str(scale),
-                '-n', str(noise)
-            ]
-            result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            if result.returncode != 0:
-                logger.error(f"Waifu2x upscaling failed: {result.stderr}")
+            # Validate input file
+            if not self.validate_file(image_path):
+                self.logger.error(f"Invalid input file for Waifu2x: {image_path}")
                 return False
-            logger.info(f"Upscaled image successfully: {image_path} -> {output_path}")
-            return True
+                
+            # Check if input is PDF
+            if image_path.lower().endswith('.pdf'):
+                self.logger.error("PDF files are not supported for Waifu2x enhancement")
+                return False
+                
+            # Verify disk space (using higher factor due to upscaling)
+            if not self.verify_disk_space(image_path, output_path, factor=scale_factor * 2):
+                self.logger.error("Insufficient disk space for Waifu2x processing")
+                return False
+                
+            # Load the image
+            try:
+                image = Image.open(image_path)
+            except Exception as e:
+                self.logger.error(f"Failed to load image for Waifu2x: {str(e)}")
+                return False
+
+            try:
+                # Get current dimensions
+                width, height = image.size
+                
+                # Calculate new dimensions
+                new_width = width * scale_factor
+                new_height = height * scale_factor
+                
+                # Resize using high-quality Lanczos resampling
+                resized_image = image.resize((new_width, new_height), Image.Resampling.LANCZOS)
+                
+                # Apply noise reduction if needed
+                if noise_level > 0:
+                    from PIL import ImageEnhance
+                    enhancer = ImageEnhance.Sharpness(resized_image)
+                    # Apply sharpening based on noise level (0-3)
+                    sharpness_factor = 1.0 + (noise_level * 0.5)  # 1.5, 2.0, 2.5 for levels 1,2,3
+                    resized_image = enhancer.enhance(sharpness_factor)
+                
+                # Save the processed image with high quality
+                resized_image.save(output_path, quality=95)
+                self.logger.info(f"Successfully processed image with Waifu2x: {output_path}")
+                return True
+                
+            except Exception as e:
+                self.logger.error(f"Waifu2x processing failed: {str(e)}")
+                return False
+                
         except Exception as e:
-            logger.error(f"Exception during Waifu2x upscaling: {e}")
+            self.logger.error(f"Unexpected error in Waifu2x processing: {str(e)}")
             return False 
