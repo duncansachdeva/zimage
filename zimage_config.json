@@ -1,6 +1,7 @@
 {
     "output_dir": "D:/tmp/zimage-output",
+    "queues_dir": "D:/tmp/zimage-output\\queues",
     "last_actions": [
-        "Upscale Image (Waifu2x)"
+        "Enhance Quality"
     ]
 }

@@ -41,8 +41,10 @@ def save_config(config):
 
 def get_default_config():
     """Get default configuration"""
+    default_output_dir = os.path.join(os.path.expanduser('~'), 'Documents', 'ZImage')
     return {
-        'output_dir': os.path.join(os.path.expanduser("~"), "Documents", "ZImage"),
+        'output_dir': default_output_dir,
+        'queues_dir': os.path.join(default_output_dir, 'queues'),
         'last_actions': []  # Store last selected actions
     }
 
@@ -288,6 +290,10 @@ class MainWindow(QMainWindow):
         # Set output directory
         self.output_dir = self.config['output_dir']
         
+        # Set queues directory
+        self.queues_dir = self.config['queues_dir']
+        os.makedirs(self.queues_dir, exist_ok=True)
+        
         # Initialize variables
         self.files = []
         self.actions_queue = []
@@ -308,13 +314,18 @@ class MainWindow(QMainWindow):
             if os.path.exists(CONFIG_FILE):
                 with open(CONFIG_FILE, 'r') as f:
                     config = json.load(f)
+                    
+                    # If output_dir has changed, update queues_dir to match
+                    if 'output_dir' in config:
+                        config['queues_dir'] = os.path.join(config['output_dir'], 'queues')
             else:
                 config = self.get_default_config()
                 self.show_first_time_setup(config)
                 self.save_config(config)
             
-            # Ensure output directory exists
+            # Ensure output and queues directories exist
             os.makedirs(config['output_dir'], exist_ok=True)
+            os.makedirs(config['queues_dir'], exist_ok=True)
             
             return config
             
@@ -322,12 +333,15 @@ class MainWindow(QMainWindow):
             self.logger.error(f"Failed to load config: {str(e)}")
             config = self.get_default_config()
             os.makedirs(config['output_dir'], exist_ok=True)
+            os.makedirs(config['queues_dir'], exist_ok=True)
             return config
     
     def get_default_config(self):
         """Get default configuration."""
+        default_output_dir = os.path.join(os.path.expanduser('~'), 'Documents', 'ZImage')
         return {
-            'output_dir': os.path.join(os.path.expanduser('~'), 'Documents', 'ZImage'),
+            'output_dir': default_output_dir,
+            'queues_dir': os.path.join(default_output_dir, 'queues'),
             'last_actions': []
         }
     
@@ -337,6 +351,7 @@ class MainWindow(QMainWindow):
             if config is None:
                 config = {
                     'output_dir': self.output_dir_input.text(),
+                    'queues_dir': self.queues_dir,
                     'last_actions': self.get_selected_actions()
                 }
             
@@ -688,20 +703,13 @@ class MainWindow(QMainWindow):
                         action.params = {
                             'target_size_mb': self.target_size_spin.value() if hasattr(self, 'target_size_spin') else 0.5
                         }
-                    elif action_name == "Image to PDF":
+                    elif action_name == "PDF to Image":
                         action.params = {
                             'combine_files': self.combine_pdf_check.isChecked() if hasattr(self, 'combine_pdf_check') else True,
                             'orientation': self.orientation_combo.currentText() if hasattr(self, 'orientation_combo') else 'Auto',
                             'images_per_page': int(self.images_per_page_combo.currentText()) if hasattr(self, 'images_per_page_combo') else 1,
                             'fit_mode': self.fit_mode_combo.currentText() if hasattr(self, 'fit_mode_combo') else 'Fit to page',
                             'quality': self.pdf_quality_combo.currentText() if hasattr(self, 'pdf_quality_combo') else 'High'
-                        }
-                    elif action_name == "PDF to Image":
-                        action.params = {
-                            'format': self.format_combo.currentText().lower() if hasattr(self, 'format_combo') else 'png',
-                            'dpi': self.dpi_spin.value() if hasattr(self, 'dpi_spin') else 300,
-                            'quality': self.quality_spin.value() if hasattr(self, 'quality_spin') else 95,
-                            'color_mode': self.color_combo.currentText() if hasattr(self, 'color_combo') else 'RGB'
                         }
                     elif action_name == "Upscale Image (Waifu2x)":
                         action.params = {
@@ -779,7 +787,13 @@ class MainWindow(QMainWindow):
         if dir_path:
             self.output_dir_input.setText(dir_path)
             self.output_dir = dir_path  # Update the output_dir attribute
+            
+            # Update queues directory to be under the new output directory
+            self.queues_dir = os.path.join(dir_path, 'queues')
+            os.makedirs(self.queues_dir, exist_ok=True)
+            
             self.config['output_dir'] = dir_path
+            self.config['queues_dir'] = self.queues_dir
             self.save_config()
             
     def process_files(self):
@@ -941,16 +955,65 @@ class MainWindow(QMainWindow):
         # Load selected queue
         try:
             data = queue_data_map[name]
-            self.actions_queue = [Action.from_dict(action_data) 
-                                for action_data in data['actions']]
             
-            # Update UI
-            self.update_queue_display()
-            
-            # Update checkboxes to match loaded queue
+            # First update checkboxes to match loaded queue
             for check in self.action_checks:
-                check.setChecked(any(action.name == check.text() 
-                                   for action in self.actions_queue))
+                check.setChecked(any(action['name'] == check.text() 
+                                   for action in data['actions']))
+                
+            # This will create the parameter widgets
+            self.setup_parameters()
+            
+            # Now create actions with saved parameters
+            self.actions_queue = []
+            for action_data in data['actions']:
+                action = Action.from_dict(action_data)
+                self.actions_queue.append(action)
+                
+                # Update the UI widgets with saved parameters
+                if action.name == "Enhance Quality" and hasattr(self, 'enhance_level_combo'):
+                    self.enhance_level_combo.setCurrentText(action.params.get('level', 'High'))
+                elif action.name == "Resize Image":
+                    if hasattr(self, 'width_spin'):
+                        self.width_spin.setValue(action.params.get('width', 2500))
+                    if hasattr(self, 'height_spin'):
+                        self.height_spin.setValue(action.params.get('height', 0))
+                    if hasattr(self, 'maintain_aspect_check'):
+                        self.maintain_aspect_check.setChecked(action.params.get('maintain_aspect', True))
+                elif action.name == "Reduce File Size" and hasattr(self, 'target_size_spin'):
+                    self.target_size_spin.setValue(action.params.get('target_size_mb', 0.5))
+                elif action.name == "Image to PDF":
+                    if hasattr(self, 'combine_pdf_check'):
+                        self.combine_pdf_check.setChecked(action.params.get('combine_files', True))
+                    if hasattr(self, 'orientation_combo'):
+                        self.orientation_combo.setCurrentText(action.params.get('orientation', 'Auto'))
+                    if hasattr(self, 'images_per_page_combo'):
+                        self.images_per_page_combo.setCurrentText(str(action.params.get('images_per_page', 1)))
+                    if hasattr(self, 'fit_mode_combo'):
+                        self.fit_mode_combo.setCurrentText(action.params.get('fit_mode', 'Fit to page'))
+                    if hasattr(self, 'pdf_quality_combo'):
+                        self.pdf_quality_combo.setCurrentText(action.params.get('quality', 'High'))
+                elif action.name == "PDF to Image":
+                    if hasattr(self, 'format_combo'):
+                        self.format_combo.setCurrentText(action.params.get('format', 'png').upper())
+                    if hasattr(self, 'dpi_spin'):
+                        self.dpi_spin.setValue(action.params.get('dpi', 300))
+                    if hasattr(self, 'quality_spin'):
+                        self.quality_spin.setValue(action.params.get('quality', 95))
+                    if hasattr(self, 'color_combo'):
+                        self.color_combo.setCurrentText(action.params.get('color_mode', 'RGB'))
+                elif action.name == "Upscale Image (Waifu2x)":
+                    if hasattr(self, 'scale_factor_combo'):
+                        self.scale_factor_combo.setCurrentText(f"{action.params.get('scale_factor', 2)}x")
+                    if hasattr(self, 'noise_level_combo'):
+                        noise_level = action.params.get('noise_level', 1)
+                        noise_text = {0: 'None (Level 0)', 1: 'Light (Level 1)', 2: 'Medium (Level 2)', 3: 'High (Level 3)'}.get(noise_level, 'Light (Level 1)')
+                        self.noise_level_combo.setCurrentText(noise_text)
+                    if hasattr(self, 'model_type_combo'):
+                        self.model_type_combo.setCurrentText(action.params.get('model_type', 'auto').capitalize())
+            
+            # Update the queue display
+            self.update_queue_display()
                 
             QMessageBox.information(self, "Success", 
                                   f"Queue '{name}' loaded successfully")
