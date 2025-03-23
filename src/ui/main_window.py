@@ -3,7 +3,7 @@ from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QComboBox, QSpinBox, QDoubleSpinBox, QLineEdit,
                              QMessageBox, QRadioButton, QButtonGroup, QScrollArea,
                              QListWidget, QCheckBox, QInputDialog, QGroupBox,
-                             QFormLayout, QSlider, QTabWidget)
+                             QFormLayout, QSlider, QTabWidget, QDialog, QDialogButtonBox)
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QMimeData, QSize, QTimer
 from PyQt6.QtGui import QDragEnterEvent, QDropEvent, QPixmap, QImage
 import os
@@ -418,7 +418,20 @@ class MainWindow(QMainWindow):
     def init_ui(self):
         """Initialize the user interface"""
         self.setWindowTitle('ZImage Processor')
-        self.setMinimumSize(800, 600)
+        self.setMinimumSize(1200, 700)
+        
+        # Create menu bar
+        menubar = self.menuBar()
+        
+        # File menu
+        file_menu = menubar.addMenu('File')
+        exit_action = file_menu.addAction('Exit')
+        exit_action.triggered.connect(self.close)
+        
+        # Help menu
+        help_menu = menubar.addMenu('Help')
+        about_action = help_menu.addAction('About ZImage')
+        about_action.triggered.connect(self.show_about_dialog)
         
         # Main widget and layout
         main_widget = QWidget()
@@ -1325,170 +1338,82 @@ class MainWindow(QMainWindow):
         except Exception as e:
             logger.error(f"Error updating parameters for {action_name}: {e}")
 
-class PDFPreviewWidget(QWidget):
-    """Widget for PDF preview with navigation"""
-    
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.current_page = 0
-        self.total_pages = 0
-        self.current_pdf = None
-        self.pdf_info = None
-        self.processor = None
+    def show_about_dialog(self):
+        """Show the About dialog with application information."""
+        about_dialog = QDialog(self)
+        about_dialog.setWindowTitle("About ZImage")
+        about_dialog.setFixedSize(500, 400)
         
-        # Create layout
-        layout = QVBoxLayout(self)
+        layout = QVBoxLayout()
         
-        # Preview area
-        self.preview_label = QLabel()
-        self.preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.preview_label.setMinimumSize(300, 400)
+        # App name and version
+        app_name_label = QLabel("ZImage")
+        app_name_label.setStyleSheet("font-size: 16px; font-weight: bold;")
+        layout.addWidget(app_name_label)
+
+        version_label = QLabel("Version 1.0.0")
+        version_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(version_label)
         
-        # Navigation controls
-        nav_layout = QHBoxLayout()
-        self.prev_button = QPushButton("←")
-        self.next_button = QPushButton("→")
-        self.page_label = QLabel("Page 0 of 0")
-        self.page_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        # Description
+        desc_label = QLabel(
+            "A powerful and versatile image processing and PDF conversion utility.\n"
+            "Built with Python and PyQt6."
+        )
+        desc_label.setWordWrap(True)
+        desc_label.setStyleSheet("font-size: 11pt; margin: 10px;")
+        desc_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(desc_label)
         
-        nav_layout.addWidget(self.prev_button)
-        nav_layout.addWidget(self.page_label)
-        nav_layout.addWidget(self.next_button)
+        # Author info
+        author_label = QLabel(
+            "Developed by: Duncan Sachdeva\n"
+            "Contact: navdeeps@gmail.com"
+        )
+        author_label.setStyleSheet("font-size: 10pt; margin: 10px;")
+        author_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(author_label)
         
-        # PDF information
-        self.info_label = QLabel()
-        self.info_label.setWordWrap(True)
-        self.info_label.setStyleSheet("QLabel { color: #666; }")
+        # License info
+        license_label = QLabel(
+            "This software is open source and free to use.\n"
+            "Released under the MIT License."
+        )
+        license_label.setWordWrap(True)
+        license_label.setStyleSheet("font-size: 10pt; margin: 10px;")
+        license_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(license_label)
         
-        # Add widgets to layout
-        layout.addWidget(self.preview_label)
-        layout.addLayout(nav_layout)
-        layout.addWidget(self.info_label)
+        # Third-party components
+        components_label = QLabel(
+            "Built with:\n\n"
+            "PyQt6 (GPL v3)\n"
+            "Pillow/PIL (PIL Software License)\n"
+            "Waifu2x (MIT License)\n"
+            "PyMuPDF (GPL v3)\n"
+            "Additional Python packages (MIT/BSD)"
+        )
+        components_label.setStyleSheet("font-size: 10pt; margin: 10px;")
+        components_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(components_label)
         
-        # Connect signals
-        self.prev_button.clicked.connect(self.prev_page)
-        self.next_button.clicked.connect(self.next_page)
+        # GitHub link
+        links_label = QLabel(
+            '<a href="https://github.com/duncansachdeva/zimage">GitHub Repository</a>'
+        )
+        links_label.setOpenExternalLinks(True)
+        links_label.setStyleSheet("font-size: 10pt; margin: 10px;")
+        links_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(links_label)
         
-        # Initial state
-        self.update_navigation()
+        # Add some spacing
+        layout.addSpacing(10)
         
-    def set_processor(self, processor):
-        """Set the image processor instance"""
-        self.processor = processor
+        # Close button
+        button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        button_box.rejected.connect(about_dialog.close)
+        layout.addWidget(button_box)
         
-    def load_pdf(self, pdf_path):
-        """Load a PDF file and display its first page"""
-        try:
-            # Close previous PDF if open
-            if self.current_pdf:
-                self.current_pdf.close()
-            
-            # Open new PDF
-            self.current_pdf = fitz.open(pdf_path)
-            self.total_pages = self.current_pdf.page_count
-            self.current_page = 0
-            
-            # Get PDF information
-            self.pdf_info = {
-                'pages': self.total_pages,
-                'dimensions': []
-            }
-            
-            # Get dimensions for each page
-            for page in self.current_pdf:
-                rect = page.rect
-                self.pdf_info['dimensions'].append((rect.width, rect.height))
-            
-            # Update display
-            self.update_page_display()
-            self.update_navigation()
-            self.update_info()
-            
-        except Exception as e:
-            logger.error(f"Failed to load PDF: {e}")
-            self.info_label.setText("Failed to load PDF")
-            
-    def update_page_display(self):
-        """Update the display with current page"""
-        if not self.current_pdf:
-            return
-            
-        try:
-            page = self.current_pdf[self.current_page]
-            pix = page.get_pixmap(matrix=fitz.Matrix(1, 1))
-            
-            # Convert pixmap to QImage
-            img = QImage(pix.samples, pix.width, pix.height, pix.stride, QImage.Format.Format_RGB888)
-            pixmap = QPixmap.fromImage(img)
-            
-            # Scale pixmap to fit preview area
-            scaled_pixmap = pixmap.scaled(
-                self.preview_label.size(),
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation
-            )
-            
-            self.preview_label.setPixmap(scaled_pixmap)
-            
-        except Exception as e:
-            logger.error(f"Failed to update page display: {e}")
-            self.preview_label.clear()
-            
-    def update_navigation(self):
-        """Update navigation buttons and page label"""
-        self.prev_button.setEnabled(self.current_page > 0)
-        self.next_button.setEnabled(self.current_pdf and self.current_page < self.total_pages - 1)
-        self.page_label.setText(f"Page {self.current_page + 1} of {self.total_pages}")
-        
-    def update_info(self):
-        """Update PDF information display"""
-        if not self.pdf_info:
-            return
-            
-        try:
-            # Get current page dimensions
-            width, height = self.pdf_info['dimensions'][self.current_page]
-            
-            # Create info text
-            info_text = [
-                f"Dimensions: {width:.1f} x {height:.1f} points",
-                f"Total Pages: {self.pdf_info['pages']}"
-            ]
-            
-            # Add size estimate if processor is available
-            if self.processor:
-                estimated_size = self.processor.estimate_output_size(
-                    (width, height),
-                    300,  # Default DPI
-                    'png',  # Default format
-                    95  # Default quality
-                )
-                info_text.append(f"Estimated size per page: {estimated_size:.1f} MB")
-            
-            self.info_label.setText("\n".join(info_text))
-            
-        except Exception as e:
-            logger.error(f"Failed to update PDF info: {e}")
-            self.info_label.setText("Failed to get PDF information")
-            
-    def prev_page(self):
-        """Show previous page"""
-        if self.current_page > 0:
-            self.current_page -= 1
-            self.update_page_display()
-            self.update_navigation()
-            self.update_info()
-            
-    def next_page(self):
-        """Show next page"""
-        if self.current_pdf and self.current_page < self.total_pages - 1:
-            self.current_page += 1
-            self.update_page_display()
-            self.update_navigation()
-            self.update_info()
-            
-    def resizeEvent(self, event):
-        """Handle resize events to update preview scaling"""
-        super().resizeEvent(event)
-        self.update_page_display()
+        about_dialog.setLayout(layout)
+        about_dialog.exec()
             

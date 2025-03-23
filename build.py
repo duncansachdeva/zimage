@@ -32,11 +32,12 @@ def build_executable():
         pyinstaller_args = [
             'pyinstaller',
             '--noconfirm',  # Replace existing spec file
-            '--onefile',    # Create a single executable
+            '--onedir',     # Create a single executable
             '--windowed',   # No console window in Windows
-            '--name=ZImage_Beta',  # Name of the executable
+            '--name=ZImage',  # Name of the executable
             '--clean',      # Clean PyInstaller cache
             '--add-data=src/resources;resources',  # Include resources
+            '--add-data=src/ui/icons;src/ui/icons',  # Include icons
             # Add hidden imports
             '--hidden-import=PIL._tkinter_finder',
             '--hidden-import=PyQt6.sip',
