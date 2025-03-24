@@ -79,9 +79,10 @@ A powerful and versatile image processing and PDF conversion application built w
 - 500MB free disk space
 
 ## Installation
-1. Download `ZImage.exe` from the releases page
-2. Run the executable - no installation required
-3. First run will create necessary configuration files
+1. Download `ZImage.zip` from https://duncangitfiles.s3.us-east-1.amazonaws.com/ZImage.zip 
+2. Unzip and extract the ZImage.exe file.
+3. Run the executable - no installation required
+4. First run will create necessary configuration files
 
 ## Usage
 1. Launch ZImage
